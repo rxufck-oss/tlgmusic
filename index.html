@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Music Bot</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--tg-theme-bg-color, #ffffff);
+            color: var(--tg-theme-text-color, #000000);
+            padding: 0;
+            overflow-x: hidden;
+        }
+
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 16px;
+        }
+
+        .header {
+            text-align: center;
+            padding: 20px 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 0 0 20px 20px;
+            margin-bottom: 20px;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            margin-bottom: 8px;
+        }
+
+        .header p {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .search-box {
+            position: relative;
+            margin-bottom: 20px;
+        }
+
+        .search-input {
+            width: 100%;
+            padding: 16px 50px 16px 20px;
+            border: 2px solid var(--tg-theme-button-color, #3390ec);
+            border-radius: 12px;
+            font-size: 16px;
+            background: var(--tg-theme-bg-color, #ffffff);
+            color: var(--tg-theme-text-color, #000000);
+            outline: none;
+            transition: all 0.3s;
+        }
+
+        .search-input:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .search-btn {
+            position: absolute;
+            right: 8px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: var(--tg-theme-button-color, #3390ec);
+            color: var(--tg-theme-button-text-color, #ffffff);
+            border: none;
+            padding: 10px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 20px;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            display: none;
+        }
+
+        .spinner {
+            border: 3px solid rgba(102, 126, 234, 0.1);
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 16px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .results {
+            display: none;
+        }
+
+        .track {
+            background: var(--tg-theme-secondary-bg-color, #f5f5f5);
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .track:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+
+        .track:active {
+            transform: translateY(0);
+        }
+
+        .track-number {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            flex-shrink: 0;
+        }
+
+        .track-info {
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .track-title {
+            font-weight: 600;
+            font-size: 15px;
+            margin-bottom: 4px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .track-duration {
+            font-size: 13px;
+            color: var(--tg-theme-hint-color, #999999);
+        }
+
+        .download-icon {
+            color: var(--tg-theme-button-color, #3390ec);
+            font-size: 20px;
+            flex-shrink: 0;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--tg-theme-hint-color, #999999);
+        }
+
+        .empty-state-icon {
+            font-size: 64px;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+
+        .empty-state-text {
+            font-size: 16px;
+        }
+
+        .downloading {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: var(--tg-theme-button-color, #3390ec);
+            color: var(--tg-theme-button-text-color, #ffffff);
+            padding: 16px;
+            text-align: center;
+            transform: translateY(100%);
+            transition: transform 0.3s;
+            z-index: 1000;
+        }
+
+        .downloading.show {
+            transform: translateY(0);
+        }
+
+        .error {
+            background: #ff4444;
+            color: white;
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 16px;
+            display: none;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 20px;
+            background: var(--tg-theme-secondary-bg-color, #f5f5f5);
+            padding: 4px;
+            border-radius: 12px;
+        }
+
+        .tab {
+            flex: 1;
+            padding: 12px;
+            border: none;
+            background: transparent;
+            color: var(--tg-theme-text-color, #000000);
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.3s;
+        }
+
+        .tab.active {
+            background: var(--tg-theme-button-color, #3390ec);
+            color: var(--tg-theme-button-text-color, #ffffff);
+        }
+
+        .history {
+            display: none;
+        }
+
+        .history-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px;
+            background: var(--tg-theme-secondary-bg-color, #f5f5f5);
+            border-radius: 8px;
+            margin-bottom: 8px;
+            cursor: pointer;
+        }
+
+        .history-icon {
+            color: var(--tg-theme-hint-color, #999999);
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🎵 Music Search</h1>
+        <p>Найди свою любимую музыку</p>
+    </div>
+
+    <div class="container">
+        <div class="error" id="error"></div>
+
+        <div class="tabs">
+            <button class="tab active" onclick="switchTab('search')">🔍 Поиск</button>
+            <button class="tab" onclick="switchTab('history')">🕐 История</button>
+        </div>
+
+        <div id="searchTab">
+            <div class="search-box">
+                <input 
+                    type="text" 
+                    class="search-input" 
+                    id="searchInput" 
+                    placeholder="Введите название песни..."
+                    autocomplete="off"
+                >
+                <button class="search-btn" onclick="searchMusic()">🔍</button>
+            </div>
+
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <p>Ищем музыку...</p>
+            </div>
+
+            <div class="results" id="results"></div>
+
+            <div class="empty-state" id="emptyState">
+                <div class="empty-state-icon">🎸</div>
+                <div class="empty-state-text">Введите название песни<br>или исполнителя</div>
+            </div>
+        </div>
+
+        <div id="historyTab" class="history"></div>
+    </div>
+
+    <div class="downloading" id="downloading">
+        <div class="spinner" style="border-color: rgba(255,255,255,0.3); border-top-color: white;"></div>
+        <p>Загружаем музыку...</p>
+    </div>
+
+    <script>
+        // Инициализация Telegram WebApp
+        const tg = window.Telegram.WebApp;
+        tg.expand();
+        tg.enableClosingConfirmation();
+
+        // Применение темы Telegram
+        document.body.style.backgroundColor = tg.themeParams.bg_color || '#ffffff';
+
+        const searchInput = document.getElementById('searchInput');
+        const loading = document.getElementById('loading');
+        const results = document.getElementById('results');
+        const emptyState = document.getElementById('emptyState');
+        const downloading = document.getElementById('downloading');
+        const errorDiv = document.getElementById('error');
+
+        // История поиска
+        let searchHistory = JSON.parse(localStorage.getItem('searchHistory') || '[]');
+
+        // Enter для поиска
+        searchInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                searchMusic();
+            }
+        });
+
+        // Функция поиска
+        async function searchMusic() {
+            const query = searchInput.value.trim();
+            
+            if (!query) {
+                showError('Введите название песни');
+                return;
+            }
+
+            // Добавляем в историю
+            addToHistory(query);
+
+            // Показываем загрузку
+            emptyState.style.display = 'none';
+            results.style.display = 'none';
+            loading.style.display = 'block';
+            errorDiv.style.display = 'none';
+
+            try {
+                // Вызов вашего n8n webhook или API
+                const response = await fetch('YOUR_N8N_WEBHOOK_URL', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        query: query,
+                        userId: tg.initDataUnsafe?.user?.id || 'demo'
+                    })
+                });
+
+                if (!response.ok) throw new Error('Ошибка поиска');
+
+                const data = await response.json();
+                displayResults(data.results || []);
+
+            } catch (error) {
+                console.error('Error:', error);
+                showError('Не удалось найти музыку. Попробуйте ещё раз.');
+                loading.style.display = 'none';
+                emptyState.style.display = 'block';
+            }
+        }
+
+        // Отображение результатов
+        function displayResults(tracks) {
+            loading.style.display = 'none';
+            
+            if (tracks.length === 0) {
+                showError('Ничего не найдено');
+                emptyState.style.display = 'block';
+                return;
+            }
+
+            results.style.display = 'block';
+            results.innerHTML = tracks.map((track, index) => `
+                <div class="track" onclick="downloadTrack('${track.videoId}', '${escapeHtml(track.title)}')">
+                    <div class="track-number">${index + 1}</div>
+                    <div class="track-info">
+                        <div class="track-title">${escapeHtml(track.title)}</div>
+                        <div class="track-duration">${track.duration}</div>
+                    </div>
+                    <div class="download-icon">⬇️</div>
+                </div>
+            `).join('');
+
+            // Добавляем haptic feedback
+            if (tg.HapticFeedback) {
+                tg.HapticFeedback.notificationOccurred('success');
+            }
+        }
+
+        // Скачивание трека
+        async function downloadTrack(videoId, title) {
+            downloading.classList.add('show');
+
+            // Haptic feedback
+            if (tg.HapticFeedback) {
+                tg.HapticFeedback.impactOccurred('medium');
+            }
+
+            try {
+                // Вызов n8n для скачивания
+                const response = await fetch('YOUR_N8N_DOWNLOAD_WEBHOOK_URL', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        videoId: videoId,
+                        userId: tg.initDataUnsafe?.user?.id || 'demo',
+                        chatId: tg.initDataUnsafe?.user?.id || 'demo'
+                    })
+                });
+
+                if (!response.ok) throw new Error('Ошибка загрузки');
+
+                // Уведомление об успехе
+                if (tg.HapticFeedback) {
+                    tg.HapticFeedback.notificationOccurred('success');
+                }
+
+                tg.showAlert('✅ Музыка отправлена в чат!');
+
+            } catch (error) {
+                console.error('Error:', error);
+                showError('Не удалось скачать трек');
+                
+                if (tg.HapticFeedback) {
+                    tg.HapticFeedback.notificationOccurred('error');
+                }
+            } finally {
+                downloading.classList.remove('show');
+            }
+        }
+
+        // История поиска
+        function addToHistory(query) {
+            if (!searchHistory.includes(query)) {
+                searchHistory.unshift(query);
+                searchHistory = searchHistory.slice(0, 10); // Храним 10 последних
+                localStorage.setItem('searchHistory', JSON.stringify(searchHistory));
+            }
+        }
+
+        function displayHistory() {
+            const historyTab = document.getElementById('historyTab');
+            
+            if (searchHistory.length === 0) {
+                historyTab.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📝</div>
+                        <div class="empty-state-text">История поиска пуста</div>
+                    </div>
+                `;
+                return;
+            }
+
+            historyTab.innerHTML = searchHistory.map(query => `
+                <div class="history-item" onclick="searchFromHistory('${escapeHtml(query)}')">
+                    <span class="history-icon">🔍</span>
+                    <span>${escapeHtml(query)}</span>
+                </div>
+            `).join('');
+        }
+
+        function searchFromHistory(query) {
+            switchTab('search');
+            searchInput.value = query;
+            searchMusic();
+        }
+
+        // Переключение вкладок
+        function switchTab(tab) {
+            const tabs = document.querySelectorAll('.tab');
+            tabs.forEach(t => t.classList.remove('active'));
+            
+            if (tab === 'search') {
+                tabs[0].classList.add('active');
+                document.getElementById('searchTab').style.display = 'block';
+                document.getElementById('historyTab').style.display = 'none';
+            } else {
+                tabs[1].classList.add('active');
+                document.getElementById('searchTab').style.display = 'none';
+                document.getElementById('historyTab').style.display = 'block';
+                displayHistory();
+            }
+        }
+
+        // Показ ошибки
+        function showError(message) {
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+            setTimeout(() => {
+                errorDiv.style.display = 'none';
+            }, 3000);
+        }
+
+        // Экранирование HTML
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Настройка главной кнопки Telegram
+        tg.MainButton.text = 'Поделиться ботом';
+        tg.MainButton.onClick(() => {
+            tg.openTelegramLink('https://t.me/share/url?url=https://t.me/YOUR_BOT_USERNAME');
+        });
+        tg.MainButton.show();
+    </script>
+</body>
+</html>
