@@ -348,7 +348,7 @@
 
             try {
                 // Вызов вашего n8n webhook или API
-                const response = await fetch('https://downless-lynna-feverous.ngrok-free.dev/webhook-test/search-music', {
+                const response = await fetch('https://downless-lynna-feverous.ngrok-free.dev/webhook/search-music', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -411,7 +411,7 @@
 
             try {
                 // Вызов n8n для скачивания
-                const response = await fetch('https://downless-lynna-feverous.ngrok-free.dev/webhook-test/download-music', {
+                const response = await fetch('https://downless-lynna-feverous.ngrok-free.dev/webhook/download-music', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
