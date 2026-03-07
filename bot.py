@@ -39,7 +39,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 TEMP_DIR = os.getenv("TEMP_DIR", os.path.join(tempfile.gettempdir(), "music_bot"))
 PROXY = os.getenv("YTDLP_PROXY", "").strip()
 DB_PATH = os.getenv("DB_PATH", "/app/music_bot.db")
-MAX_SEARCH_RESULTS = int(os.getenv("MAX_SEARCH_RESULTS", "5"))
+MAX_SEARCH_RESULTS = int(os.getenv("MAX_SEARCH_RESULTS", "20"))
+BOT_RESULTS_LIMIT = int(os.getenv("BOT_RESULTS_LIMIT", "10"))
+ARTIST_SEARCH_RESULTS = int(os.getenv("ARTIST_SEARCH_RESULTS", "100"))
 DOWNLOAD_CACHE_TTL = int(os.getenv("DOWNLOAD_CACHE_TTL", "3600"))
 SEARCH_COOLDOWN_SEC = int(os.getenv("SEARCH_COOLDOWN_SEC", "3"))
 SC_SEARCH_TIMEOUT_SEC = int(os.getenv("SC_SEARCH_TIMEOUT_SEC", "20"))
@@ -170,25 +172,31 @@ def parse_search_results(stdout: str) -> list:
     return [r for r in results if r.get("url")]
 
 
-def search_soundcloud(query: str) -> list:
+def search_soundcloud(query: str, limit: int) -> list:
+    safe_limit = max(1, min(limit, 200))
+    timeout_sec = max(SC_SEARCH_TIMEOUT_SEC, 20 + safe_limit // 4)
     cmd = [
         "yt-dlp",
         *build_common_yt_dlp_args(),
         "--flat-playlist",
         "--dump-json",
         "--playlist-end",
-        str(MAX_SEARCH_RESULTS),
+        str(safe_limit),
         "--skip-download",
-        f"scsearch{MAX_SEARCH_RESULTS}:{query}",
+        f"scsearch{safe_limit}:{query}",
     ]
-    result = run_yt_dlp(cmd, timeout=SC_SEARCH_TIMEOUT_SEC)
+    result = run_yt_dlp(cmd, timeout=timeout_sec)
     if result.returncode != 0:
         return []
     return parse_search_results(result.stdout)
 
 
-def search_music(query: str) -> tuple[list, str | None]:
+def search_music(query: str, limit: int | None = None, artist_mode: bool = False) -> tuple[list, str | None]:
     try:
+        target_limit = max(1, min(limit or MAX_SEARCH_RESULTS, 200))
+        if artist_mode:
+            target_limit = max(target_limit, ARTIST_SEARCH_RESULTS)
+
         if "soundcloud.com/" in query:
             return [
                 {
@@ -202,7 +210,7 @@ def search_music(query: str) -> tuple[list, str | None]:
                 }
             ], None
 
-        videos = search_soundcloud(query)
+        videos = search_soundcloud(query, target_limit)
         if videos:
             return videos, None
         return [], "SoundCloud не вернул результаты. Попробуйте другой запрос."
@@ -352,11 +360,11 @@ async def handle_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not allowed:
         return
 
-    videos, error = await asyncio.to_thread(search_music, query_text)
+    videos, error = await asyncio.to_thread(search_music, query_text, BOT_RESULTS_LIMIT, False)
     username = context.bot.username
 
     results = []
-    for i, video in enumerate(videos[:MAX_SEARCH_RESULTS]):
+    for i, video in enumerate(videos[:BOT_RESULTS_LIMIT]):
         dl_key = put_download_item(video["url"], video["title"], video.get("artist"), video.get("cover_url"))
         deep_link = f"https://t.me/{username}?start=dl_{dl_key}"
         artist = video.get("artist") or "Unknown Artist"
@@ -388,7 +396,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     search_msg = await update.message.reply_text(f"🔍 Ищу: *{query}*...", parse_mode="Markdown")
-    videos, error = await asyncio.to_thread(search_music, query)
+    videos, error = await asyncio.to_thread(search_music, query, BOT_RESULTS_LIMIT, False)
 
     if not videos:
         await search_msg.edit_text(f"😔 Ошибка поиска: {error}")
@@ -439,7 +447,14 @@ def start_http_api() -> None:
         if not query:
             return jsonify({"ok": False, "error": "query is required", "results": []}), 400
 
-        videos, error = search_music(query)
+        raw_limit = payload.get("limit")
+        try:
+            requested_limit = int(raw_limit) if raw_limit is not None else MAX_SEARCH_RESULTS
+        except (TypeError, ValueError):
+            requested_limit = MAX_SEARCH_RESULTS
+
+        artist_mode = bool(payload.get("artistMode")) or bool(payload.get("artist"))
+        videos, error = search_music(query, requested_limit, artist_mode)
         return jsonify({"ok": len(videos) > 0, "error": error, "results": videos})
 
     @app.post("/api/download")
