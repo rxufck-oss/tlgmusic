@@ -1,0 +1,13 @@
+services:
+  music-bot:
+    build: .
+    container_name: telegram-music-bot
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: always # Только один раз!

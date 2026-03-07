@@ -1,0 +1,22 @@
+.env
+*.env
+
+# Secrets / auth
+cookies.txt
+*.cookies
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Local runtime artifacts
+*.log
+*.db
+
+# Local binaries
+cloudflared.exe
+
+# OS
+desktop.ini
+.DS_Store

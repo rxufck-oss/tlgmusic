@@ -1,0 +1,607 @@
+﻿<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>TLG Music</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root {
+      --sc-orange: #ff5a00;
+      --sc-orange-2: #ff7a1a;
+      --bg-0: #0f1012;
+      --bg-1: #17191d;
+      --bg-2: #22252b;
+      --text-0: #f6f7f9;
+      --text-1: #c2c6cf;
+      --line: #30343d;
+      --ok: #25c26e;
+      --bad: #ff4f4f;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: "Segoe UI", "Trebuchet MS", "Helvetica Neue", sans-serif;
+      color: var(--text-0);
+      background:
+        radial-gradient(1200px 500px at -10% -10%, #2a2d35 0%, transparent 60%),
+        radial-gradient(1000px 420px at 110% -10%, #2b1d12 0%, transparent 55%),
+        linear-gradient(180deg, var(--bg-1), var(--bg-0));
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    .shell {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 18px 14px 28px;
+    }
+
+    .top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .logo {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, var(--sc-orange), var(--sc-orange-2));
+      display: grid;
+      place-items: center;
+      font-weight: 800;
+      color: #fff;
+      box-shadow: 0 8px 24px rgba(255, 90, 0, 0.35);
+    }
+
+    .brand h1 {
+      font-size: 18px;
+      letter-spacing: 0.2px;
+    }
+
+    .brand p {
+      font-size: 12px;
+      color: var(--text-1);
+      margin-top: 2px;
+    }
+
+    .chip {
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--text-1);
+      border-radius: 999px;
+      font-size: 12px;
+      padding: 7px 10px;
+      white-space: nowrap;
+    }
+
+    .hero {
+      border: 1px solid #3a2c21;
+      background:
+        linear-gradient(135deg, rgba(255, 90, 0, 0.26), rgba(255, 122, 26, 0.07) 60%),
+        linear-gradient(180deg, #1e2026, #17191f);
+      border-radius: 16px;
+      padding: 14px;
+      margin-bottom: 12px;
+    }
+
+    .hero h2 {
+      font-size: 16px;
+      margin-bottom: 5px;
+    }
+
+    .hero p {
+      color: #ffd8bf;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .search {
+      position: relative;
+      margin-bottom: 10px;
+    }
+
+    .search input {
+      width: 100%;
+      height: 52px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text-0);
+      font-size: 16px;
+      padding: 0 130px 0 14px;
+      outline: none;
+    }
+
+    .search input:focus {
+      border-color: #4a4f5a;
+      box-shadow: 0 0 0 2px rgba(255, 90, 0, 0.18);
+    }
+
+    .search button {
+      position: absolute;
+      right: 6px;
+      top: 6px;
+      height: 40px;
+      border: 0;
+      border-radius: 10px;
+      background: linear-gradient(135deg, var(--sc-orange), var(--sc-orange-2));
+      color: #fff;
+      font-weight: 700;
+      font-size: 14px;
+      padding: 0 14px;
+      cursor: pointer;
+    }
+
+    .recent {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding: 4px 2px 8px;
+      margin-bottom: 8px;
+    }
+
+    .recent::-webkit-scrollbar { display: none; }
+
+    .recent button {
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--text-1);
+      border-radius: 999px;
+      font-size: 12px;
+      padding: 7px 10px;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+
+    .loading {
+      display: none;
+      gap: 10px;
+      align-items: center;
+      padding: 12px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.03);
+      margin-bottom: 10px;
+    }
+
+    .spin {
+      width: 18px;
+      height: 18px;
+      border: 2px solid rgba(255, 255, 255, 0.25);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    .error {
+      display: none;
+      margin-bottom: 10px;
+      border: 1px solid rgba(255, 79, 79, 0.45);
+      background: rgba(255, 79, 79, 0.12);
+      color: #ffd5d5;
+      border-radius: 12px;
+      padding: 10px 12px;
+      font-size: 13px;
+    }
+
+    .list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .track {
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02));
+      border-radius: 14px;
+      padding: 10px;
+      display: grid;
+      grid-template-columns: 58px 1fr;
+      gap: 10px;
+    }
+
+    .art {
+      width: 58px;
+      height: 58px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, #2a2e36, #1b1f25);
+      border: 1px solid #3a3f48;
+      overflow: hidden;
+      display: grid;
+      place-items: center;
+      color: #8f95a3;
+      font-size: 12px;
+    }
+
+    .art img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    .meta {
+      min-width: 0;
+    }
+
+    .title {
+      font-size: 14px;
+      font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-bottom: 3px;
+    }
+
+    .sub {
+      font-size: 12px;
+      color: var(--text-1);
+      margin-bottom: 8px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .dur {
+      font-size: 12px;
+      color: #9ca3af;
+      padding: 5px 8px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255,255,255,0.03);
+    }
+
+    .btns {
+      display: flex;
+      gap: 6px;
+    }
+
+    .btn {
+      border: 0;
+      border-radius: 9px;
+      height: 30px;
+      padding: 0 9px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .btn-open {
+      background: #2a2d35;
+      color: #d2d6df;
+      border: 1px solid #414652;
+    }
+
+    .btn-dl {
+      background: linear-gradient(135deg, var(--sc-orange), var(--sc-orange-2));
+      color: #fff;
+    }
+
+    .empty {
+      border: 1px dashed #3a3f48;
+      border-radius: 14px;
+      padding: 22px 10px;
+      text-align: center;
+      color: #9aa2b2;
+      font-size: 14px;
+      line-height: 1.4;
+    }
+
+    .toast {
+      position: fixed;
+      left: 12px;
+      right: 12px;
+      bottom: 12px;
+      border-radius: 12px;
+      padding: 11px 12px;
+      text-align: center;
+      color: #fff;
+      font-size: 13px;
+      transform: translateY(140%);
+      transition: transform .24s ease;
+      z-index: 40;
+    }
+
+    .toast.show { transform: translateY(0); }
+    .toast.ok { background: rgba(37,194,110,.95); }
+    .toast.bad { background: rgba(255,79,79,.95); }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="top">
+      <div class="brand">
+        <div class="logo">SC</div>
+        <div>
+          <h1>SoundCloud Mini</h1>
+          <p>TMA для поиска и скачивания MP3</p>
+        </div>
+      </div>
+      <div class="chip" id="userChip">Guest</div>
+    </div>
+
+    <div class="hero">
+      <h2>Поиск в стиле SoundCloud</h2>
+      <p>Быстрый поиск треков, карточки с обложками и отправка MP3 в чат.</p>
+    </div>
+
+    <div class="search">
+      <input id="searchInput" type="text" placeholder="Например: nirvana smells like teen spirit" />
+      <button id="searchBtn">Найти</button>
+    </div>
+
+    <div class="recent" id="recent"></div>
+
+    <div class="loading" id="loading">
+      <div class="spin"></div>
+      <span>Ищу треки в SoundCloud...</span>
+    </div>
+
+    <div class="error" id="error"></div>
+    <div class="list" id="results"></div>
+
+    <div class="empty" id="empty">Введи запрос и нажми «Найти». Результаты появятся здесь.</div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const tg = window.Telegram?.WebApp;
+    if (tg) {
+      tg.expand();
+      tg.enableClosingConfirmation();
+    }
+
+    const userId = tg?.initDataUnsafe?.user?.id || "demo";
+    const username = tg?.initDataUnsafe?.user?.username || "guest";
+    document.getElementById("userChip").textContent = `@${username}`;
+
+    const API_BASE = window.location.origin;
+    const SEARCH_URL = `${API_BASE}/api/search`;
+    const DOWNLOAD_URL = `${API_BASE}/api/download`;
+
+    const els = {
+      input: document.getElementById("searchInput"),
+      btn: document.getElementById("searchBtn"),
+      loading: document.getElementById("loading"),
+      error: document.getElementById("error"),
+      results: document.getElementById("results"),
+      empty: document.getElementById("empty"),
+      recent: document.getElementById("recent"),
+      toast: document.getElementById("toast"),
+    };
+
+    const historyKey = "sc_recent_queries_v1";
+    let recent = JSON.parse(localStorage.getItem(historyKey) || "[]");
+
+    const esc = (s) => {
+      const d = document.createElement("div");
+      d.textContent = String(s ?? "");
+      return d.innerHTML;
+    };
+
+    function toast(msg, ok = true) {
+      els.toast.textContent = msg;
+      els.toast.className = `toast show ${ok ? "ok" : "bad"}`;
+      setTimeout(() => { els.toast.className = "toast"; }, 2300);
+    }
+
+    function showError(msg) {
+      els.error.textContent = msg;
+      els.error.style.display = "block";
+    }
+
+    function clearError() {
+      els.error.style.display = "none";
+      els.error.textContent = "";
+    }
+
+    function setLoading(v) {
+      els.loading.style.display = v ? "flex" : "none";
+      els.btn.disabled = v;
+      els.btn.textContent = v ? "..." : "Найти";
+    }
+
+    function saveRecent(q) {
+      const query = q.trim();
+      if (!query) return;
+      recent = [query, ...recent.filter((x) => x !== query)].slice(0, 10);
+      localStorage.setItem(historyKey, JSON.stringify(recent));
+      renderRecent();
+    }
+
+    function renderRecent() {
+      if (!recent.length) {
+        els.recent.innerHTML = "";
+        return;
+      }
+      els.recent.innerHTML = recent
+        .map((q) => `<button data-q="${esc(q)}">${esc(q)}</button>`)
+        .join("");
+      els.recent.querySelectorAll("button").forEach((b) => {
+        b.onclick = () => {
+          els.input.value = b.dataset.q || "";
+          searchMusic();
+        };
+      });
+    }
+
+    function mapTrack(raw, index) {
+      return {
+        id: raw.id || raw.videoId || `${Date.now()}-${index}`,
+        title: raw.title || raw.name || "Без названия",
+        artist: raw.artist || raw.uploader || raw.channel || "Unknown Artist",
+        duration: raw.duration || raw.duration_string || "?:??",
+        url: raw.url || raw.webpage_url || raw.trackUrl || "",
+        cover: raw.cover_url || raw.thumbnail || raw.artwork || "",
+      };
+    }
+
+    function extractResults(payload) {
+      if (Array.isArray(payload)) return payload;
+      if (Array.isArray(payload?.results)) return payload.results;
+      if (Array.isArray(payload?.data?.results)) return payload.data.results;
+      if (Array.isArray(payload?.items)) return payload.items;
+      return [];
+    }
+
+    function renderResults(tracks) {
+      if (!tracks.length) {
+        els.results.innerHTML = "";
+        els.empty.style.display = "block";
+        showError("Ничего не найдено. Попробуй другой запрос.");
+        return;
+      }
+
+      clearError();
+      els.empty.style.display = "none";
+      els.results.innerHTML = tracks.map((t, i) => {
+        const art = t.cover
+          ? `<img src="${esc(t.cover)}" alt="cover" loading="lazy" />`
+          : "ART";
+        return `
+          <article class="track">
+            <div class="art">${art}</div>
+            <div class="meta">
+              <div class="title">${esc(t.title)}</div>
+              <div class="sub">${esc(t.artist)}</div>
+              <div class="row">
+                <span class="dur">${esc(t.duration)}</span>
+                <div class="btns">
+                  ${t.url ? `<button class="btn btn-open" data-open="${esc(t.url)}">Открыть</button>` : ""}
+                  <button class="btn btn-dl" data-i="${i}">MP3</button>
+                </div>
+              </div>
+            </div>
+          </article>
+        `;
+      }).join("");
+
+      els.results.querySelectorAll("[data-open]").forEach((b) => {
+        b.onclick = () => {
+          const url = b.getAttribute("data-open");
+          if (!url) return;
+          if (tg?.openLink) tg.openLink(url);
+          else window.open(url, "_blank");
+        };
+      });
+
+      els.results.querySelectorAll("[data-i]").forEach((b) => {
+        b.onclick = () => downloadTrack(tracks[Number(b.getAttribute("data-i"))]);
+      });
+    }
+
+    async function searchMusic() {
+      const query = els.input.value.trim();
+      if (!query) {
+        showError("Введите запрос для поиска.");
+        return;
+      }
+
+      saveRecent(query);
+      setLoading(true);
+      clearError();
+
+      try {
+        const res = await fetch(SEARCH_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query, userId, source: "soundcloud" }),
+        });
+
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const payload = await res.json();
+        const tracks = extractResults(payload).map(mapTrack);
+        renderResults(tracks);
+
+        if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+      } catch (e) {
+        console.error(e);
+        els.results.innerHTML = "";
+        els.empty.style.display = "block";
+        showError("Ошибка запроса к API. Проверь доступность /api/search.");
+        if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    async function downloadTrack(track) {
+      if (!track) return;
+      toast("Готовлю MP3...", true);
+
+      try {
+        const payload = {
+          userId,
+          chatId: userId,
+          title: track.title,
+          artist: track.artist,
+          trackUrl: track.url,
+          url: track.url,
+          source: "soundcloud",
+        };
+
+        const res = await fetch(DOWNLOAD_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+        let data = {};
+        try { data = await res.json(); } catch (_) {}
+
+        if (data?.deepLink && tg?.openTelegramLink) {
+          tg.openTelegramLink(data.deepLink);
+        }
+
+        toast("MP3 отправлен в чат", true);
+        if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+      } catch (e) {
+        console.error(e);
+        toast("Не удалось отправить MP3", false);
+        if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
+      }
+    }
+
+    els.btn.onclick = searchMusic;
+    els.input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") searchMusic();
+    });
+
+    renderRecent();
+
+    if (tg) {
+      tg.MainButton.text = "Открыть бота";
+      tg.MainButton.onClick(() => tg.openTelegramLink("https://t.me/YOUR_BOT_USERNAME"));
+      tg.MainButton.show();
+    }
+  </script>
+</body>
+</html>
