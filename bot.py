@@ -41,7 +41,7 @@ PROXY = os.getenv("YTDLP_PROXY", "").strip()
 DB_PATH = os.getenv("DB_PATH", "/app/music_bot.db")
 MAX_SEARCH_RESULTS = int(os.getenv("MAX_SEARCH_RESULTS", "20"))
 BOT_RESULTS_LIMIT = int(os.getenv("BOT_RESULTS_LIMIT", "10"))
-ARTIST_SEARCH_RESULTS = int(os.getenv("ARTIST_SEARCH_RESULTS", "100"))
+ARTIST_SEARCH_RESULTS = int(os.getenv("ARTIST_SEARCH_RESULTS", "40"))
 DOWNLOAD_CACHE_TTL = int(os.getenv("DOWNLOAD_CACHE_TTL", "3600"))
 SEARCH_COOLDOWN_SEC = int(os.getenv("SEARCH_COOLDOWN_SEC", "3"))
 SC_SEARCH_TIMEOUT_SEC = int(os.getenv("SC_SEARCH_TIMEOUT_SEC", "20"))
@@ -174,7 +174,7 @@ def parse_search_results(stdout: str) -> list:
 
 def search_soundcloud(query: str, limit: int) -> list:
     safe_limit = max(1, min(limit, 200))
-    timeout_sec = max(SC_SEARCH_TIMEOUT_SEC, 20 + safe_limit // 4)
+    timeout_sec = max(SC_SEARCH_TIMEOUT_SEC, 14 + safe_limit // 3)
     cmd = [
         "yt-dlp",
         *build_common_yt_dlp_args(),
@@ -454,6 +454,10 @@ def start_http_api() -> None:
             requested_limit = MAX_SEARCH_RESULTS
 
         artist_mode = bool(payload.get("artistMode")) or bool(payload.get("artist"))
+        if artist_mode:
+            requested_limit = max(10, min(requested_limit, 200))
+        else:
+            requested_limit = max(5, min(requested_limit, 60))
         videos, error = search_music(query, requested_limit, artist_mode)
         return jsonify({"ok": len(videos) > 0, "error": error, "results": videos})
 
