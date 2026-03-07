@@ -46,10 +46,13 @@ DOWNLOAD_CACHE_TTL = int(os.getenv("DOWNLOAD_CACHE_TTL", "3600"))
 SEARCH_COOLDOWN_SEC = int(os.getenv("SEARCH_COOLDOWN_SEC", "3"))
 SC_SEARCH_TIMEOUT_SEC = int(os.getenv("SC_SEARCH_TIMEOUT_SEC", "20"))
 WEBAPP_API_PORT = int(os.getenv("WEBAPP_API_PORT", "8080"))
+SEARCH_CACHE_TTL = int(os.getenv("SEARCH_CACHE_TTL", "300"))
+SEARCH_CACHE_MAX_ITEMS = int(os.getenv("SEARCH_CACHE_MAX_ITEMS", "200"))
 
 os.makedirs(TEMP_DIR, exist_ok=True)
 DOWNLOAD_CACHE: dict[str, dict] = {}
 USER_LAST_SEARCH_TS: dict[int, float] = {}
+SEARCH_CACHE: dict[str, dict] = {}
 DB_CONN = None
 HTTP_API_THREAD = None
 
@@ -107,6 +110,37 @@ def prune_download_cache() -> None:
         DOWNLOAD_CACHE.pop(k, None)
 
 
+def make_search_cache_key(query: str, limit: int, artist_mode: bool, include_covers: bool) -> str:
+    return f"{query.lower().strip()}|{limit}|{int(artist_mode)}|{int(include_covers)}"
+
+
+def prune_search_cache() -> None:
+    now = time.time()
+    stale_keys = [k for k, v in SEARCH_CACHE.items() if now - v.get("created_at", now) > SEARCH_CACHE_TTL]
+    for k in stale_keys:
+        SEARCH_CACHE.pop(k, None)
+
+    if len(SEARCH_CACHE) > SEARCH_CACHE_MAX_ITEMS:
+        # Drop oldest entries first.
+        old_items = sorted(SEARCH_CACHE.items(), key=lambda item: item[1].get("created_at", 0))
+        over = len(SEARCH_CACHE) - SEARCH_CACHE_MAX_ITEMS
+        for k, _ in old_items[:over]:
+            SEARCH_CACHE.pop(k, None)
+
+
+def get_search_cache(key: str) -> list | None:
+    prune_search_cache()
+    item = SEARCH_CACHE.get(key)
+    if not item:
+        return None
+    return item.get("results")
+
+
+def set_search_cache(key: str, results: list) -> None:
+    prune_search_cache()
+    SEARCH_CACHE[key] = {"results": results, "created_at": time.time()}
+
+
 def put_download_item(url: str, title: str, artist: str | None = None, cover_url: str | None = None) -> str:
     prune_download_cache()
     key = uuid.uuid4().hex[:12]
@@ -144,18 +178,20 @@ def run_yt_dlp(cmd: list[str], timeout: int) -> subprocess.CompletedProcess:
         return subprocess.CompletedProcess(args=cmd, returncode=124, stdout="", stderr=f"timeout {timeout}s")
 
 
-def parse_search_results(stdout: str) -> list:
+def parse_search_results(stdout: str, include_covers: bool = True) -> list:
     results = []
     for line in stdout.strip().split("\n"):
         if not line:
             continue
         try:
             data = json.loads(line)
-            cover = data.get("thumbnail")
-            if not cover:
-                thumbs = data.get("thumbnails") or []
-                if thumbs and isinstance(thumbs, list):
-                    cover = thumbs[-1].get("url")
+            cover = None
+            if include_covers:
+                cover = data.get("thumbnail")
+                if not cover:
+                    thumbs = data.get("thumbnails") or []
+                    if thumbs and isinstance(thumbs, list):
+                        cover = thumbs[-1].get("url")
             results.append(
                 {
                     "id": data.get("id"),
@@ -172,7 +208,7 @@ def parse_search_results(stdout: str) -> list:
     return [r for r in results if r.get("url")]
 
 
-def search_soundcloud(query: str, limit: int) -> list:
+def search_soundcloud(query: str, limit: int, include_covers: bool = True) -> list:
     safe_limit = max(1, min(limit, 200))
     timeout_sec = max(SC_SEARCH_TIMEOUT_SEC, 14 + safe_limit // 3)
     cmd = [
@@ -188,10 +224,15 @@ def search_soundcloud(query: str, limit: int) -> list:
     result = run_yt_dlp(cmd, timeout=timeout_sec)
     if result.returncode != 0:
         return []
-    return parse_search_results(result.stdout)
+    return parse_search_results(result.stdout, include_covers=include_covers)
 
 
-def search_music(query: str, limit: int | None = None, artist_mode: bool = False) -> tuple[list, str | None]:
+def search_music(
+    query: str,
+    limit: int | None = None,
+    artist_mode: bool = False,
+    include_covers: bool = True,
+) -> tuple[list, str | None]:
     try:
         target_limit = max(1, min(limit or MAX_SEARCH_RESULTS, 200))
         if artist_mode:
@@ -210,8 +251,14 @@ def search_music(query: str, limit: int | None = None, artist_mode: bool = False
                 }
             ], None
 
-        videos = search_soundcloud(query, target_limit)
+        cache_key = make_search_cache_key(query, target_limit, artist_mode, include_covers)
+        cached = get_search_cache(cache_key)
+        if cached is not None:
+            return cached, None
+
+        videos = search_soundcloud(query, target_limit, include_covers=include_covers)
         if videos:
+            set_search_cache(cache_key, videos)
             return videos, None
         return [], "SoundCloud не вернул результаты. Попробуйте другой запрос."
     except Exception as e:
@@ -360,7 +407,7 @@ async def handle_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not allowed:
         return
 
-    videos, error = await asyncio.to_thread(search_music, query_text, BOT_RESULTS_LIMIT, False)
+    videos, error = await asyncio.to_thread(search_music, query_text, BOT_RESULTS_LIMIT, False, True)
     username = context.bot.username
 
     results = []
@@ -396,7 +443,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     search_msg = await update.message.reply_text(f"🔍 Ищу: *{query}*...", parse_mode="Markdown")
-    videos, error = await asyncio.to_thread(search_music, query, BOT_RESULTS_LIMIT, False)
+    videos, error = await asyncio.to_thread(search_music, query, BOT_RESULTS_LIMIT, False, True)
 
     if not videos:
         await search_msg.edit_text(f"😔 Ошибка поиска: {error}")
@@ -454,11 +501,12 @@ def start_http_api() -> None:
             requested_limit = MAX_SEARCH_RESULTS
 
         artist_mode = bool(payload.get("artistMode")) or bool(payload.get("artist"))
+        include_covers = bool(payload.get("includeCovers", False))
         if artist_mode:
             requested_limit = max(10, min(requested_limit, 200))
         else:
             requested_limit = max(5, min(requested_limit, 60))
-        videos, error = search_music(query, requested_limit, artist_mode)
+        videos, error = search_music(query, requested_limit, artist_mode, include_covers)
         return jsonify({"ok": len(videos) > 0, "error": error, "results": videos})
 
     @app.post("/api/download")

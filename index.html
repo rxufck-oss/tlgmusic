@@ -312,6 +312,7 @@
       sourceLimit: 0,
       lastRequestReturned: 0
     };
+    const searchCache = new Map();
 
     const esc = (s) => {
       const d = document.createElement("div");
@@ -449,21 +450,29 @@
       setState(artistMode ? `Поиск артиста: ${q}` : `Ищу: ${q}`);
 
       try {
-        const res = await fetch(SEARCH_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            query: q,
-            userId,
-            source: "soundcloud",
-            artistMode,
-            limit
-          })
-        });
+        const cacheKey = `${q.toLowerCase()}|${artistMode ? 1 : 0}|${limit}`;
+        let incoming = null;
+        if (searchCache.has(cacheKey)) {
+          incoming = searchCache.get(cacheKey);
+        } else {
+          const res = await fetch(SEARCH_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              query: q,
+              userId,
+              source: "soundcloud",
+              artistMode,
+              limit,
+              includeCovers: false
+            })
+          });
 
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const payload = await res.json();
-        const incoming = extractResults(payload).map(mapTrack);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const payload = await res.json();
+          incoming = extractResults(payload).map(mapTrack);
+          searchCache.set(cacheKey, incoming);
+        }
 
         if (!incoming.length) {
           if (!append) {
@@ -471,7 +480,7 @@
             state.visibleCount = LIST_PAGE;
             renderVisibleTracks();
           }
-          setError(payload?.error || "Ничего не найдено.");
+          setError("Ничего не найдено.");
           if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
           return;
         }
