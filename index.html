@@ -65,6 +65,30 @@
       font-weight: 700; font-size: 13px; padding: 0 12px; cursor: pointer;
     }
 
+    .source-switch {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .source-btn {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: #4d5969;
+      border-radius: 999px;
+      height: 32px;
+      padding: 0 12px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .source-btn.active {
+      border-color: #ffd9bf;
+      background: #fff1e5;
+      color: #9a4b11;
+    }
+
     .section { margin-bottom: 14px; }
     .section h2 { font-size: 14px; margin-bottom: 8px; }
     .muted { color: var(--sub); font-size: 12px; }
@@ -223,6 +247,11 @@
       <button id="searchBtn">Найти</button>
     </section>
 
+    <div class="source-switch">
+      <button class="source-btn active" data-source="soundcloud" id="srcSoundcloud">SoundCloud</button>
+      <button class="source-btn" data-source="spotify" id="srcSpotify">Spotify</button>
+    </div>
+
     <section class="section">
       <h2>Подборки</h2>
       <div class="row-scroll" id="playlists"></div>
@@ -308,6 +337,7 @@
       tracks: [],
       visibleCount: LIST_PAGE,
       currentQuery: "",
+      currentSource: "soundcloud",
       artistMode: false,
       sourceLimit: 0,
       lastRequestReturned: 0
@@ -354,6 +384,7 @@
     function mapTrack(raw, index) {
       return {
         id: raw.id || raw.url || `${Date.now()}-${index}`,
+        source: raw.source || state.currentSource || "soundcloud",
         title: raw.title || raw.name || "Без названия",
         artist: raw.artist || raw.uploader || raw.channel || "Unknown Artist",
         duration: raw.duration || raw.duration_string || "?:??",
@@ -450,7 +481,7 @@
       setState(artistMode ? `Поиск артиста: ${q}` : `Ищу: ${q}`);
 
       try {
-        const cacheKey = `${q.toLowerCase()}|${artistMode ? 1 : 0}|${limit}`;
+        const cacheKey = `${state.currentSource}|${q.toLowerCase()}|${artistMode ? 1 : 0}|${limit}`;
         let incoming = null;
         if (searchCache.has(cacheKey)) {
           incoming = searchCache.get(cacheKey);
@@ -461,7 +492,7 @@
             body: JSON.stringify({
               query: q,
               userId,
-              source: "soundcloud",
+              source: state.currentSource,
               artistMode,
               limit,
               includeCovers: false
@@ -523,7 +554,7 @@
             artist: track.artist,
             trackUrl: track.url,
             url: track.url,
-            source: "soundcloud",
+            source: track.source || state.currentSource,
             cover_url: track.cover
           })
         });
@@ -583,6 +614,14 @@
       });
     }
 
+    function setSource(source) {
+      state.currentSource = source === "spotify" ? "spotify" : "soundcloud";
+      document.querySelectorAll(".source-btn").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.source === state.currentSource);
+      });
+      setState(`Источник: ${state.currentSource}`);
+    }
+
     els.btn.onclick = () => runSearch(els.input.value.trim(), true, ARTIST_INITIAL_LIMIT, false);
     els.input.addEventListener("keydown", (e) => {
       if (e.key === "Enter") runSearch(els.input.value.trim(), true, ARTIST_INITIAL_LIMIT, false);
@@ -600,8 +639,12 @@
       runSearch(state.currentQuery, true, nextLimit, true);
     };
 
+    document.getElementById("srcSoundcloud").onclick = () => setSource("soundcloud");
+    document.getElementById("srcSpotify").onclick = () => setSource("spotify");
+
     renderPlaylists();
     renderArtists();
+    setSource("soundcloud");
 
     if (tg) {
       tg.MainButton.text = "Открыть бота";

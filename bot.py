@@ -1,4 +1,5 @@
 ﻿import asyncio
+import base64
 import json
 import logging
 import os
@@ -7,6 +8,7 @@ import subprocess
 import tempfile
 import time
 import urllib.request
+import urllib.parse
 import uuid
 import threading
 
@@ -48,11 +50,14 @@ SC_SEARCH_TIMEOUT_SEC = int(os.getenv("SC_SEARCH_TIMEOUT_SEC", "20"))
 WEBAPP_API_PORT = int(os.getenv("WEBAPP_API_PORT", "8080"))
 SEARCH_CACHE_TTL = int(os.getenv("SEARCH_CACHE_TTL", "300"))
 SEARCH_CACHE_MAX_ITEMS = int(os.getenv("SEARCH_CACHE_MAX_ITEMS", "200"))
+SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
 
 os.makedirs(TEMP_DIR, exist_ok=True)
 DOWNLOAD_CACHE: dict[str, dict] = {}
 USER_LAST_SEARCH_TS: dict[int, float] = {}
 SEARCH_CACHE: dict[str, dict] = {}
+SPOTIFY_TOKEN_CACHE: dict[str, float | str] = {"token": "", "expires_at": 0}
 DB_CONN = None
 HTTP_API_THREAD = None
 
@@ -141,7 +146,13 @@ def set_search_cache(key: str, results: list) -> None:
     SEARCH_CACHE[key] = {"results": results, "created_at": time.time()}
 
 
-def put_download_item(url: str, title: str, artist: str | None = None, cover_url: str | None = None) -> str:
+def put_download_item(
+    url: str,
+    title: str,
+    artist: str | None = None,
+    cover_url: str | None = None,
+    source: str = "soundcloud",
+) -> str:
     prune_download_cache()
     key = uuid.uuid4().hex[:12]
     DOWNLOAD_CACHE[key] = {
@@ -149,7 +160,7 @@ def put_download_item(url: str, title: str, artist: str | None = None, cover_url
         "title": title,
         "artist": artist,
         "cover_url": cover_url,
-        "source": "soundcloud",
+        "source": source or "soundcloud",
         "created_at": time.time(),
     }
     return key
@@ -165,6 +176,119 @@ def build_common_yt_dlp_args() -> list[str]:
     if PROXY:
         args.extend(["--proxy", PROXY])
     return args
+
+
+def http_json_request(url: str, method: str = "GET", headers: dict | None = None, data: bytes | None = None) -> dict | None:
+    try:
+        req = urllib.request.Request(url, headers=headers or {}, method=method, data=data)
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            raw = resp.read().decode("utf-8", errors="ignore")
+            return json.loads(raw)
+    except Exception as e:
+        logger.error("HTTP JSON request failed (%s): %s", url, e)
+        return None
+
+
+def is_spotify_configured() -> bool:
+    return bool(SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET)
+
+
+def get_spotify_token() -> str | None:
+    if not is_spotify_configured():
+        return None
+
+    now = time.time()
+    cached_token = str(SPOTIFY_TOKEN_CACHE.get("token") or "")
+    expires_at = float(SPOTIFY_TOKEN_CACHE.get("expires_at") or 0)
+    if cached_token and expires_at - 20 > now:
+        return cached_token
+
+    auth_raw = f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}".encode("utf-8")
+    auth_b64 = base64.b64encode(auth_raw).decode("ascii")
+    headers = {
+        "Authorization": f"Basic {auth_b64}",
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    token_payload = http_json_request(
+        "https://accounts.spotify.com/api/token",
+        method="POST",
+        headers=headers,
+        data=b"grant_type=client_credentials",
+    )
+    if not token_payload:
+        return None
+
+    token = str(token_payload.get("access_token") or "")
+    expires_in = int(token_payload.get("expires_in") or 3600)
+    if not token:
+        return None
+    SPOTIFY_TOKEN_CACHE["token"] = token
+    SPOTIFY_TOKEN_CACHE["expires_at"] = now + expires_in
+    return token
+
+
+def search_spotify(query: str, limit: int = 20) -> list:
+    token = get_spotify_token()
+    if not token:
+        return []
+
+    safe_limit = max(1, min(limit, 50))
+    encoded_q = urllib.parse.quote(query)
+    url = f"https://api.spotify.com/v1/search?q={encoded_q}&type=track&limit={safe_limit}"
+    payload = http_json_request(url, headers={"Authorization": f"Bearer {token}"})
+    if not payload:
+        return []
+
+    items = (((payload.get("tracks") or {}).get("items")) or [])
+    out = []
+    for it in items:
+        artists = it.get("artists") or []
+        artist = ", ".join([a.get("name", "") for a in artists if a.get("name")]).strip() or "Unknown Artist"
+        images = (it.get("album") or {}).get("images") or []
+        cover = images[0].get("url") if images else None
+        duration_ms = int(it.get("duration_ms") or 0)
+        mins = duration_ms // 60000
+        secs = (duration_ms % 60000) // 1000
+        out.append(
+            {
+                "id": it.get("id"),
+                "spotify_id": it.get("id"),
+                "title": it.get("name", "Без названия"),
+                "artist": artist,
+                "duration": f"{mins}:{secs:02d}" if duration_ms else "?:??",
+                "url": ((it.get("external_urls") or {}).get("spotify") or ""),
+                "cover_url": cover,
+                "source": "spotify",
+            }
+        )
+    return [x for x in out if x.get("url")]
+
+
+def resolve_spotify_to_soundcloud(track_url: str, title: str | None = None, artist: str | None = None) -> str | None:
+    query = f"{artist or ''} {title or ''}".strip()
+    if not query and "open.spotify.com/track/" in (track_url or ""):
+        token = get_spotify_token()
+        if token:
+            parsed = urllib.parse.urlparse(track_url)
+            parts = [p for p in (parsed.path or "").split("/") if p]
+            if len(parts) >= 2 and parts[0] == "track":
+                spotify_id = parts[1]
+                meta = http_json_request(
+                    f"https://api.spotify.com/v1/tracks/{spotify_id}",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                if meta:
+                    m_title = str(meta.get("name") or "")
+                    m_artists = meta.get("artists") or []
+                    m_artist = ", ".join([a.get("name", "") for a in m_artists if a.get("name")]).strip()
+                    query = f"{m_artist} {m_title}".strip()
+    if not query:
+        return None
+
+    candidates = search_soundcloud(query, 1, include_covers=False)
+    if not candidates:
+        return None
+    return candidates[0].get("url")
 
 
 def run_yt_dlp(cmd: list[str], timeout: int) -> subprocess.CompletedProcess:
@@ -232,6 +356,7 @@ def search_music(
     limit: int | None = None,
     artist_mode: bool = False,
     include_covers: bool = True,
+    source: str = "soundcloud",
 ) -> tuple[list, str | None]:
     try:
         target_limit = max(1, min(limit or MAX_SEARCH_RESULTS, 200))
@@ -250,6 +375,14 @@ def search_music(
                     "source": "soundcloud",
                 }
             ], None
+
+        if source == "spotify":
+            if not is_spotify_configured():
+                return [], "Spotify не настроен. Добавьте SPOTIFY_CLIENT_ID и SPOTIFY_CLIENT_SECRET."
+            spotify_results = search_spotify(query, target_limit)
+            if spotify_results:
+                return spotify_results, None
+            return [], "Spotify не вернул результаты. Попробуйте другой запрос."
 
         cache_key = make_search_cache_key(query, target_limit, artist_mode, include_covers)
         cached = get_search_cache(cache_key)
@@ -336,7 +469,19 @@ async def send_track_to_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int, i
         await status.delete()
         return
 
-    audio_file = await asyncio.to_thread(download_audio, item["url"])
+    source_url = item["url"]
+    if item.get("source") == "spotify" or "open.spotify.com/track/" in (source_url or ""):
+        source_url = await asyncio.to_thread(
+            resolve_spotify_to_soundcloud,
+            source_url,
+            item.get("title"),
+            item.get("artist"),
+        )
+        if not source_url:
+            await status.edit_text("❌ Не удалось найти MP3-источник для Spotify трека.")
+            return
+
+    audio_file = await asyncio.to_thread(download_audio, source_url)
     if not audio_file:
         await status.edit_text("❌ Ошибка при скачивании MP3.")
         return
@@ -379,8 +524,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(
-        "🎵 Отправь название трека или ссылку SoundCloud.\n"
-        "Поиск и скачивание: SoundCloud\n"
+        "🎵 Отправь название трека или ссылку SoundCloud/Spotify.\n"
+        "Поиск: SoundCloud + Spotify (если настроен)\n"
+        "Скачивание MP3: через SoundCloud-источник\n"
         "Команды:\n"
         "/help"
     )
@@ -407,15 +553,23 @@ async def handle_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not allowed:
         return
 
-    videos, error = await asyncio.to_thread(search_music, query_text, BOT_RESULTS_LIMIT, False, True)
+    source = "spotify" if query_text.lower().startswith("sp ") or "spotify.com/" in query_text.lower() else "soundcloud"
+    clean_query = query_text[3:].strip() if query_text.lower().startswith("sp ") else query_text
+    videos, error = await asyncio.to_thread(search_music, clean_query, BOT_RESULTS_LIMIT, False, True, source)
     username = context.bot.username
 
     results = []
     for i, video in enumerate(videos[:BOT_RESULTS_LIMIT]):
-        dl_key = put_download_item(video["url"], video["title"], video.get("artist"), video.get("cover_url"))
+        dl_key = put_download_item(
+            video["url"],
+            video["title"],
+            video.get("artist"),
+            video.get("cover_url"),
+            video.get("source", "soundcloud"),
+        )
         deep_link = f"https://t.me/{username}?start=dl_{dl_key}"
         artist = video.get("artist") or "Unknown Artist"
-        body = f"{artist} | {video['duration']} | soundcloud"
+        body = f"{artist} | {video['duration']} | {video.get('source', 'soundcloud')}"
         if error:
             body = f"{body}\n{error}"
 
@@ -442,8 +596,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⏱ Подожди {wait_sec} сек перед новым поиском.")
         return
 
-    search_msg = await update.message.reply_text(f"🔍 Ищу: *{query}*...", parse_mode="Markdown")
-    videos, error = await asyncio.to_thread(search_music, query, BOT_RESULTS_LIMIT, False, True)
+    source = "spotify" if query.lower().startswith("sp ") or "spotify.com/" in query.lower() else "soundcloud"
+    clean_query = query[3:].strip() if query.lower().startswith("sp ") else query
+
+    search_msg = await update.message.reply_text(
+        f"🔍 Ищу в *{source}*: *{clean_query}*...",
+        parse_mode="Markdown",
+    )
+    videos, error = await asyncio.to_thread(search_music, clean_query, BOT_RESULTS_LIMIT, False, True, source)
 
     if not videos:
         await search_msg.edit_text(f"😔 Ошибка поиска: {error}")
@@ -455,7 +615,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         title = video["title"][:35]
         artist = (video.get("artist") or "Unknown Artist")[:25]
         text += f"{i}. {artist} - {title} ({video['duration']})\n"
-        dl_key = put_download_item(video["url"], video["title"], video.get("artist"), video.get("cover_url"))
+        dl_key = put_download_item(
+            video["url"],
+            video["title"],
+            video.get("artist"),
+            video.get("cover_url"),
+            video.get("source", "soundcloud"),
+        )
         keyboard.append([InlineKeyboardButton(f"⬇️ {i}. {artist} - {title}", callback_data=f"dl_{dl_key}")])
 
     await search_msg.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -502,11 +668,12 @@ def start_http_api() -> None:
 
         artist_mode = bool(payload.get("artistMode")) or bool(payload.get("artist"))
         include_covers = bool(payload.get("includeCovers", False))
+        source = str(payload.get("source") or "soundcloud").strip().lower()
         if artist_mode:
             requested_limit = max(10, min(requested_limit, 200))
         else:
             requested_limit = max(5, min(requested_limit, 60))
-        videos, error = search_music(query, requested_limit, artist_mode, include_covers)
+        videos, error = search_music(query, requested_limit, artist_mode, include_covers, source)
         return jsonify({"ok": len(videos) > 0, "error": error, "results": videos})
 
     @app.post("/api/download")
@@ -527,7 +694,7 @@ def start_http_api() -> None:
             "title": payload.get("title") or "audio",
             "artist": payload.get("artist") or None,
             "cover_url": payload.get("cover_url") or payload.get("cover") or None,
-            "source": "soundcloud",
+            "source": str(payload.get("source") or "soundcloud"),
         }
         track_key = make_track_key(item)
 
@@ -544,7 +711,17 @@ def start_http_api() -> None:
                 )
                 return jsonify({"ok": True, "cached": True})
 
-            audio_file = download_audio(track_url)
+            resolved_url = track_url
+            if item.get("source") == "spotify" or "open.spotify.com/track/" in track_url:
+                resolved_url = resolve_spotify_to_soundcloud(
+                    track_url,
+                    item.get("title"),
+                    item.get("artist"),
+                )
+                if not resolved_url:
+                    return jsonify({"ok": False, "error": "spotify track resolve failed"}), 400
+
+            audio_file = download_audio(resolved_url)
             if not audio_file:
                 return jsonify({"ok": False, "error": "download failed"}), 500
 
@@ -601,3 +778,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
