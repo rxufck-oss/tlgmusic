@@ -502,7 +502,9 @@
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const payload = await res.json();
           incoming = extractResults(payload).map(mapTrack);
-          searchCache.set(cacheKey, incoming);
+          if (incoming.length) {
+            searchCache.set(cacheKey, incoming);
+          }
         }
 
         if (!incoming.length) {
@@ -619,6 +621,7 @@
       document.querySelectorAll(".source-btn").forEach((btn) => {
         btn.classList.toggle("active", btn.dataset.source === state.currentSource);
       });
+      searchCache.clear();
       setState(`Источник: ${state.currentSource}`);
     }
 
