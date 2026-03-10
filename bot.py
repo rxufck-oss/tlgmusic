@@ -52,6 +52,10 @@ SEARCH_CACHE_TTL = int(os.getenv("SEARCH_CACHE_TTL", "300"))
 SEARCH_CACHE_MAX_ITEMS = int(os.getenv("SEARCH_CACHE_MAX_ITEMS", "200"))
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
+YTDLP_AUDIO_BITRATE = int(os.getenv("YTDLP_AUDIO_BITRATE", "128"))
+YTDLP_FORMAT = os.getenv("YTDLP_FORMAT", "bestaudio[abr<=128]/bestaudio").strip()
+YTDLP_CONCURRENT_FRAGMENTS = int(os.getenv("YTDLP_CONCURRENT_FRAGMENTS", "4"))
+SEND_THUMBNAIL = os.getenv("SEND_THUMBNAIL", "0").strip() == "1"
 
 os.makedirs(TEMP_DIR, exist_ok=True)
 DOWNLOAD_CACHE: dict[str, dict] = {}
@@ -409,17 +413,19 @@ def download_audio(source_url: str) -> str | None:
             "yt-dlp",
             *build_common_yt_dlp_args(),
             "-f",
-            "bestaudio",
+            YTDLP_FORMAT or "bestaudio",
             "--extract-audio",
             "--audio-format",
             "mp3",
             "--audio-quality",
-            "192K",
+            f"{YTDLP_AUDIO_BITRATE}K",
             "--no-playlist",
             "-o",
             output_template,
             source_url,
         ]
+        if YTDLP_CONCURRENT_FRAGMENTS > 1:
+            cmd.extend(["--concurrent-fragments", str(YTDLP_CONCURRENT_FRAGMENTS)])
         result = run_yt_dlp(cmd, timeout=180)
         if result.returncode != 0:
             return None
@@ -486,7 +492,9 @@ async def send_track_to_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int, i
         await status.edit_text("❌ Ошибка при скачивании MP3.")
         return
 
-    thumb_path = await asyncio.to_thread(download_thumbnail, item.get("cover_url"))
+    thumb_path = None
+    if SEND_THUMBNAIL:
+        thumb_path = await asyncio.to_thread(download_thumbnail, item.get("cover_url"))
     await status.edit_text("📤 Отправляю MP3...")
     try:
         with open(audio_file, "rb") as audio:
@@ -725,7 +733,9 @@ def start_http_api() -> None:
             if not audio_file:
                 return jsonify({"ok": False, "error": "download failed"}), 500
 
-            thumb_path = download_thumbnail(item.get("cover_url"))
+            thumb_path = None
+            if SEND_THUMBNAIL:
+                thumb_path = download_thumbnail(item.get("cover_url"))
             try:
                 with open(audio_file, "rb") as audio:
                     thumb_file = open(thumb_path, "rb") if thumb_path and os.path.exists(thumb_path) else None
