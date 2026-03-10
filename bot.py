@@ -54,6 +54,7 @@ SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
 SC_CLIENT_ID = os.getenv("SC_CLIENT_ID", "").strip()
 SC_API_TIMEOUT_SEC = int(os.getenv("SC_API_TIMEOUT_SEC", "12"))
+MAX_TRACK_DURATION_SEC = int(os.getenv("MAX_TRACK_DURATION_SEC", "0"))
 YTDLP_AUDIO_BITRATE = int(os.getenv("YTDLP_AUDIO_BITRATE", "64"))
 YTDLP_FORMAT = os.getenv("YTDLP_FORMAT", "bestaudio[abr<=96]/bestaudio").strip()
 YTDLP_CONCURRENT_FRAGMENTS = int(os.getenv("YTDLP_CONCURRENT_FRAGMENTS", "8"))
@@ -122,8 +123,8 @@ def prune_download_cache() -> None:
         DOWNLOAD_CACHE.pop(k, None)
 
 
-def make_search_cache_key(query: str, limit: int, artist_mode: bool, include_covers: bool) -> str:
-    return f"{query.lower().strip()}|{limit}|{int(artist_mode)}|{int(include_covers)}"
+def make_search_cache_key(query: str, limit: int, artist_mode: bool, include_covers: bool, source: str) -> str:
+    return f"{source}|{query.lower().strip()}|{limit}|{int(artist_mode)}|{int(include_covers)}"
 
 
 def prune_search_cache() -> None:
@@ -185,10 +186,16 @@ def build_common_yt_dlp_args() -> list[str]:
     return args
 
 
-def http_json_request(url: str, method: str = "GET", headers: dict | None = None, data: bytes | None = None) -> dict | None:
+def http_json_request(
+    url: str,
+    method: str = "GET",
+    headers: dict | None = None,
+    data: bytes | None = None,
+    timeout: int = 25,
+) -> dict | None:
     try:
         req = urllib.request.Request(url, headers=headers or {}, method=method, data=data)
-        with urllib.request.urlopen(req, timeout=25) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", errors="ignore")
             return json.loads(raw)
     except Exception as e:
@@ -316,6 +323,10 @@ def parse_search_results(stdout: str, include_covers: bool = True) -> list:
             continue
         try:
             data = json.loads(line)
+            duration_sec = data.get("duration")
+            if MAX_TRACK_DURATION_SEC and isinstance(duration_sec, (int, float)):
+                if duration_sec > MAX_TRACK_DURATION_SEC:
+                    continue
             cover = None
             if include_covers:
                 cover = data.get("thumbnail")
@@ -329,6 +340,7 @@ def parse_search_results(stdout: str, include_covers: bool = True) -> list:
                     "title": data.get("title", "Без названия"),
                     "artist": data.get("uploader") or data.get("channel"),
                     "duration": data.get("duration_string", "?:??"),
+                    "duration_sec": duration_sec,
                     "url": data.get("webpage_url"),
                     "cover_url": cover,
                     "source": "soundcloud",
@@ -378,7 +390,7 @@ def search_soundcloud_api(query: str, limit: int, include_covers: bool = True) -
         "https://api-v2.soundcloud.com/search/tracks"
         f"?q={encoded_q}&limit={safe_limit}&client_id={SC_CLIENT_ID}"
     )
-    payload = http_json_request(url, headers={"User-Agent": "Mozilla/5.0"})
+    payload = http_json_request(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=SC_API_TIMEOUT_SEC)
     if not payload:
         return []
     items = payload.get("collection") or []
@@ -386,6 +398,9 @@ def search_soundcloud_api(query: str, limit: int, include_covers: bool = True) -
     for it in items:
         artist = (it.get("user") or {}).get("username")
         duration_ms = int(it.get("duration") or 0)
+        if MAX_TRACK_DURATION_SEC and duration_ms:
+            if duration_ms > MAX_TRACK_DURATION_SEC * 1000:
+                continue
         mins = duration_ms // 60000
         secs = (duration_ms % 60000) // 1000
         cover = normalize_sc_cover(it.get("artwork_url")) if include_covers else None
@@ -436,7 +451,7 @@ def search_music(
                 return spotify_results, None
             return [], "Spotify не вернул результаты. Попробуйте другой запрос."
 
-        cache_key = make_search_cache_key(query, target_limit, artist_mode, include_covers)
+        cache_key = make_search_cache_key(query, target_limit, artist_mode, include_covers, source)
         cached = get_search_cache(cache_key)
         if cached is not None:
             return cached, None
