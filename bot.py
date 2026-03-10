@@ -48,6 +48,9 @@ DOWNLOAD_CACHE_TTL = int(os.getenv("DOWNLOAD_CACHE_TTL", "3600"))
 SEARCH_COOLDOWN_SEC = int(os.getenv("SEARCH_COOLDOWN_SEC", "3"))
 SC_SEARCH_TIMEOUT_SEC = int(os.getenv("SC_SEARCH_TIMEOUT_SEC", "20"))
 WEBAPP_API_PORT = int(os.getenv("WEBAPP_API_PORT", "8080"))
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
+WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8443"))
+WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/telegram").strip()
 SEARCH_CACHE_TTL = int(os.getenv("SEARCH_CACHE_TTL", "300"))
 SEARCH_CACHE_MAX_ITEMS = int(os.getenv("SEARCH_CACHE_MAX_ITEMS", "200"))
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
@@ -875,7 +878,17 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
     print("🤖 Бот запущен!")
-    app.run_polling()
+    if WEBHOOK_URL:
+        # WEBHOOK_URL should be like https://your.domain or https://your.domain/path
+        webhook_full = WEBHOOK_URL.rstrip("/") + WEBHOOK_PATH
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=WEBHOOK_PORT,
+            url_path=WEBHOOK_PATH.lstrip("/"),
+            webhook_url=webhook_full,
+        )
+    else:
+        app.run_polling()
 
 
 if __name__ == "__main__":
