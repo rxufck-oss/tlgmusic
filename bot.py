@@ -52,6 +52,7 @@ SEARCH_CACHE_TTL = int(os.getenv("SEARCH_CACHE_TTL", "300"))
 SEARCH_CACHE_MAX_ITEMS = int(os.getenv("SEARCH_CACHE_MAX_ITEMS", "200"))
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
+SPOTIFY_PROXY = os.getenv("SPOTIFY_PROXY", "").strip()
 SC_CLIENT_ID = os.getenv("SC_CLIENT_ID", "").strip()
 SC_API_TIMEOUT_SEC = int(os.getenv("SC_API_TIMEOUT_SEC", "12"))
 MAX_TRACK_DURATION_SEC = int(os.getenv("MAX_TRACK_DURATION_SEC", "0"))
@@ -192,10 +193,18 @@ def http_json_request(
     headers: dict | None = None,
     data: bytes | None = None,
     timeout: int = 25,
+    proxy: str | None = None,
 ) -> dict | None:
     try:
         req = urllib.request.Request(url, headers=headers or {}, method=method, data=data)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        opener = None
+        if proxy:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+        if opener:
+            resp = opener.open(req, timeout=timeout)
+        else:
+            resp = urllib.request.urlopen(req, timeout=timeout)
+        with resp:
             raw = resp.read().decode("utf-8", errors="ignore")
             return json.loads(raw)
     except Exception as e:
@@ -228,6 +237,7 @@ def get_spotify_token() -> str | None:
         method="POST",
         headers=headers,
         data=b"grant_type=client_credentials",
+        proxy=SPOTIFY_PROXY or None,
     )
     if not token_payload:
         return None
@@ -249,7 +259,15 @@ def search_spotify(query: str, limit: int = 20) -> list:
     safe_limit = max(1, min(limit, 50))
     encoded_q = urllib.parse.quote(query)
     url = f"https://api.spotify.com/v1/search?q={encoded_q}&type=track&limit={safe_limit}"
-    payload = http_json_request(url, headers={"Authorization": f"Bearer {token}"})
+    payload = http_json_request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0",
+        },
+        proxy=SPOTIFY_PROXY or None,
+    )
     if not payload:
         return []
 
@@ -581,6 +599,10 @@ async def send_track_to_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int, i
                 if thumb_file:
                     thumb_file.close()
         await status.delete()
+    except Exception as e:
+        logger.error("Telegram send_audio failed: %s", e)
+        await status.edit_text("❌ Ошибка отправки в Telegram.")
+        return
     finally:
         if thumb_path and os.path.exists(thumb_path):
             os.remove(thumb_path)
@@ -821,6 +843,9 @@ def start_http_api() -> None:
                     finally:
                         if thumb_file:
                             thumb_file.close()
+            except Exception as e:
+                logger.error("HTTP send_audio failed: %s", e)
+                return jsonify({"ok": False, "error": "telegram send failed"}), 500
             finally:
                 if thumb_path and os.path.exists(thumb_path):
                     os.remove(thumb_path)
