@@ -54,9 +54,10 @@ SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
 SC_CLIENT_ID = os.getenv("SC_CLIENT_ID", "").strip()
 SC_API_TIMEOUT_SEC = int(os.getenv("SC_API_TIMEOUT_SEC", "12"))
-YTDLP_AUDIO_BITRATE = int(os.getenv("YTDLP_AUDIO_BITRATE", "128"))
-YTDLP_FORMAT = os.getenv("YTDLP_FORMAT", "bestaudio[abr<=128]/bestaudio").strip()
-YTDLP_CONCURRENT_FRAGMENTS = int(os.getenv("YTDLP_CONCURRENT_FRAGMENTS", "4"))
+YTDLP_AUDIO_BITRATE = int(os.getenv("YTDLP_AUDIO_BITRATE", "64"))
+YTDLP_FORMAT = os.getenv("YTDLP_FORMAT", "bestaudio[abr<=96]/bestaudio").strip()
+YTDLP_CONCURRENT_FRAGMENTS = int(os.getenv("YTDLP_CONCURRENT_FRAGMENTS", "8"))
+FFMPEG_THREADS = int(os.getenv("FFMPEG_THREADS", "2"))
 SEND_THUMBNAIL = os.getenv("SEND_THUMBNAIL", "0").strip() == "1"
 
 os.makedirs(TEMP_DIR, exist_ok=True)
@@ -473,6 +474,8 @@ def download_audio(source_url: str) -> str | None:
             output_template,
             source_url,
         ]
+        if FFMPEG_THREADS > 0:
+            cmd.extend(["--postprocessor-args", f"ffmpeg:-threads {FFMPEG_THREADS}"])
         if YTDLP_CONCURRENT_FRAGMENTS > 1:
             cmd.extend(["--concurrent-fragments", str(YTDLP_CONCURRENT_FRAGMENTS)])
         result = run_yt_dlp(cmd, timeout=180)
