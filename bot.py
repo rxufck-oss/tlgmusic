@@ -52,6 +52,8 @@ SEARCH_CACHE_TTL = int(os.getenv("SEARCH_CACHE_TTL", "300"))
 SEARCH_CACHE_MAX_ITEMS = int(os.getenv("SEARCH_CACHE_MAX_ITEMS", "200"))
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
+SC_CLIENT_ID = os.getenv("SC_CLIENT_ID", "").strip()
+SC_API_TIMEOUT_SEC = int(os.getenv("SC_API_TIMEOUT_SEC", "12"))
 YTDLP_AUDIO_BITRATE = int(os.getenv("YTDLP_AUDIO_BITRATE", "128"))
 YTDLP_FORMAT = os.getenv("YTDLP_FORMAT", "bestaudio[abr<=128]/bestaudio").strip()
 YTDLP_CONCURRENT_FRAGMENTS = int(os.getenv("YTDLP_CONCURRENT_FRAGMENTS", "4"))
@@ -355,6 +357,51 @@ def search_soundcloud(query: str, limit: int, include_covers: bool = True) -> li
     return parse_search_results(result.stdout, include_covers=include_covers)
 
 
+def is_soundcloud_api_configured() -> bool:
+    return bool(SC_CLIENT_ID)
+
+
+def normalize_sc_cover(url: str | None) -> str | None:
+    if not url:
+        return None
+    # Upgrade artwork size when possible.
+    return url.replace("-large", "-t500x500")
+
+
+def search_soundcloud_api(query: str, limit: int, include_covers: bool = True) -> list:
+    if not is_soundcloud_api_configured():
+        return []
+    safe_limit = max(1, min(limit, 200))
+    encoded_q = urllib.parse.quote(query)
+    url = (
+        "https://api-v2.soundcloud.com/search/tracks"
+        f"?q={encoded_q}&limit={safe_limit}&client_id={SC_CLIENT_ID}"
+    )
+    payload = http_json_request(url, headers={"User-Agent": "Mozilla/5.0"})
+    if not payload:
+        return []
+    items = payload.get("collection") or []
+    results = []
+    for it in items:
+        artist = (it.get("user") or {}).get("username")
+        duration_ms = int(it.get("duration") or 0)
+        mins = duration_ms // 60000
+        secs = (duration_ms % 60000) // 1000
+        cover = normalize_sc_cover(it.get("artwork_url")) if include_covers else None
+        results.append(
+            {
+                "id": it.get("id"),
+                "title": it.get("title", "Без названия"),
+                "artist": artist or "Unknown Artist",
+                "duration": f"{mins}:{secs:02d}" if duration_ms else "?:??",
+                "url": it.get("permalink_url"),
+                "cover_url": cover,
+                "source": "soundcloud",
+            }
+        )
+    return [r for r in results if r.get("url")]
+
+
 def search_music(
     query: str,
     limit: int | None = None,
@@ -393,7 +440,9 @@ def search_music(
         if cached is not None:
             return cached, None
 
-        videos = search_soundcloud(query, target_limit, include_covers=include_covers)
+        videos = search_soundcloud_api(query, target_limit, include_covers=include_covers)
+        if not videos:
+            videos = search_soundcloud(query, target_limit, include_covers=include_covers)
         if videos:
             set_search_cache(cache_key, videos)
             return videos, None
