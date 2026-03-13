@@ -20,6 +20,7 @@ from telegram import (
     InputTextMessageContent,
     Update,
 )
+from telegram.request import HTTPXRequest
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -64,6 +65,8 @@ YTDLP_FORMAT = os.getenv("YTDLP_FORMAT", "bestaudio[abr<=96]/bestaudio").strip()
 YTDLP_CONCURRENT_FRAGMENTS = int(os.getenv("YTDLP_CONCURRENT_FRAGMENTS", "8"))
 FFMPEG_THREADS = int(os.getenv("FFMPEG_THREADS", "2"))
 SEND_THUMBNAIL = os.getenv("SEND_THUMBNAIL", "0").strip() == "1"
+TELEGRAM_POOL_SIZE = int(os.getenv("TELEGRAM_POOL_SIZE", "20"))
+TELEGRAM_POOL_TIMEOUT = float(os.getenv("TELEGRAM_POOL_TIMEOUT", "30"))
 
 os.makedirs(TEMP_DIR, exist_ok=True)
 DOWNLOAD_CACHE: dict[str, dict] = {}
@@ -72,6 +75,16 @@ SEARCH_CACHE: dict[str, dict] = {}
 SPOTIFY_TOKEN_CACHE: dict[str, float | str] = {"token": "", "expires_at": 0}
 DB_CONN = None
 HTTP_API_THREAD = None
+
+
+def run_coro(coro):
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+        asyncio.set_event_loop(None)
 
 
 def init_db() -> None:
@@ -742,7 +755,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def start_http_api() -> None:
     app = Flask(__name__)
-    api_bot = Bot(BOT_TOKEN)
+    api_request = HTTPXRequest(
+        connection_pool_size=TELEGRAM_POOL_SIZE,
+        pool_timeout=TELEGRAM_POOL_TIMEOUT,
+    )
+    api_bot = Bot(BOT_TOKEN, request=api_request)
     app_root = os.path.dirname(os.path.abspath(__file__))
 
     @app.get("/")
@@ -801,7 +818,7 @@ def start_http_api() -> None:
         try:
             cached = get_cached_file_id(track_key)
             if cached:
-                asyncio.run(
+                run_coro(
                     api_bot.send_audio(
                         chat_id=chat_id,
                         audio=cached,
@@ -832,7 +849,7 @@ def start_http_api() -> None:
                 with open(audio_file, "rb") as audio:
                     thumb_file = open(thumb_path, "rb") if thumb_path and os.path.exists(thumb_path) else None
                     try:
-                        sent = asyncio.run(
+                        sent = run_coro(
                             api_bot.send_audio(
                                 chat_id=chat_id,
                                 audio=audio,
