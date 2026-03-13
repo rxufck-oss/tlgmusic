@@ -75,16 +75,33 @@ SEARCH_CACHE: dict[str, dict] = {}
 SPOTIFY_TOKEN_CACHE: dict[str, float | str] = {"token": "", "expires_at": 0}
 DB_CONN = None
 HTTP_API_THREAD = None
+SEND_LOOP = None
+SEND_LOOP_THREAD = None
+SEND_LOOP_READY = threading.Event()
+SEND_BOT = None
 
 
-def run_coro(coro):
+def _send_loop_worker():
+    global SEND_LOOP, SEND_BOT
     loop = asyncio.new_event_loop()
-    try:
-        asyncio.set_event_loop(loop)
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
-        asyncio.set_event_loop(None)
+    asyncio.set_event_loop(loop)
+    SEND_LOOP = loop
+    request = HTTPXRequest(
+        connection_pool_size=TELEGRAM_POOL_SIZE,
+        pool_timeout=TELEGRAM_POOL_TIMEOUT,
+    )
+    SEND_BOT = Bot(BOT_TOKEN, request=request)
+    SEND_LOOP_READY.set()
+    loop.run_forever()
+
+
+def ensure_send_loop():
+    global SEND_LOOP_THREAD
+    if SEND_LOOP_THREAD and SEND_LOOP_READY.is_set():
+        return
+    SEND_LOOP_THREAD = threading.Thread(target=_send_loop_worker, daemon=True)
+    SEND_LOOP_THREAD.start()
+    SEND_LOOP_READY.wait(timeout=10)
 
 
 def init_db() -> None:
@@ -755,11 +772,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def start_http_api() -> None:
     app = Flask(__name__)
-    api_request = HTTPXRequest(
-        connection_pool_size=TELEGRAM_POOL_SIZE,
-        pool_timeout=TELEGRAM_POOL_TIMEOUT,
-    )
-    api_bot = Bot(BOT_TOKEN, request=api_request)
+    ensure_send_loop()
     app_root = os.path.dirname(os.path.abspath(__file__))
 
     @app.get("/")
@@ -818,14 +831,16 @@ def start_http_api() -> None:
         try:
             cached = get_cached_file_id(track_key)
             if cached:
-                run_coro(
-                    api_bot.send_audio(
+                fut = asyncio.run_coroutine_threadsafe(
+                    SEND_BOT.send_audio(
                         chat_id=chat_id,
                         audio=cached,
                         title=item.get("title"),
                         performer=item.get("artist"),
-                    )
+                    ),
+                    SEND_LOOP,
                 )
+                fut.result(timeout=60)
                 return jsonify({"ok": True, "cached": True})
 
             resolved_url = track_url
@@ -849,15 +864,17 @@ def start_http_api() -> None:
                 with open(audio_file, "rb") as audio:
                     thumb_file = open(thumb_path, "rb") if thumb_path and os.path.exists(thumb_path) else None
                     try:
-                        sent = run_coro(
-                            api_bot.send_audio(
+                        fut = asyncio.run_coroutine_threadsafe(
+                            SEND_BOT.send_audio(
                                 chat_id=chat_id,
                                 audio=audio,
                                 title=item.get("title"),
                                 performer=item.get("artist"),
                                 thumbnail=thumb_file,
-                            )
+                            ),
+                            SEND_LOOP,
                         )
+                        sent = fut.result(timeout=180)
                         if sent and sent.audio and sent.audio.file_id:
                             save_cached_file_id(track_key, sent.audio.file_id)
                     finally:
