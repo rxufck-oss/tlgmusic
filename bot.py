@@ -356,31 +356,24 @@ def get_spotify_new_releases(limit: int = 12, country: str = "US") -> dict:
             }
         )
 
-    for album in albums_raw[: min(10, len(albums_raw))]:
-        album_id = album.get("id")
-        if not album_id:
-            continue
-        track_payload = http_json_request(
-            f"https://api.spotify.com/v1/albums/{album_id}/tracks?limit=1",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/json",
-                "User-Agent": "Mozilla/5.0",
-            },
-            proxy=SPOTIFY_PROXY or None,
-        )
-        if not track_payload:
-            continue
-        items = track_payload.get("items") or []
-        if not items:
-            continue
-        it = items[0]
+    # Use a lightweight "new" search to get track cards without per-album requests.
+    track_search = http_json_request(
+        f"https://api.spotify.com/v1/search?q=tag%3Anew&type=track&limit={safe_limit}&market={safe_country}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0",
+        },
+        proxy=SPOTIFY_PROXY or None,
+    )
+    items = (((track_search or {}).get("tracks") or {}).get("items")) or []
+    for it in items:
         artists = it.get("artists") or []
         artist = ", ".join([a.get("name", "") for a in artists if a.get("name")]).strip() or "Unknown Artist"
         duration_ms = int(it.get("duration_ms") or 0)
         mins = duration_ms // 60000
         secs = (duration_ms % 60000) // 1000
-        images = album.get("images") or []
+        images = (it.get("album") or {}).get("images") or []
         cover = images[0].get("url") if images else None
         tracks.append(
             {
@@ -679,19 +672,20 @@ def search_music(
                 }
             ], None
 
+        cache_key = make_search_cache_key(query, target_limit, artist_mode, include_covers, source, offset)
+        cached = get_search_cache(cache_key)
+        if cached is not None:
+            return cached, None
+
         if source == "spotify":
             if not is_spotify_configured():
                 return [], "Spotify не настроен. Добавьте SPOTIFY_CLIENT_ID и SPOTIFY_CLIENT_SECRET."
             spotify_results = search_spotify(query, target_limit, include_meta=include_meta, offset=offset)
             if spotify_results:
+                set_search_cache(cache_key, spotify_results)
                 return spotify_results, None
             # Fallback to SoundCloud if Spotify is blocked or returns nothing.
             source = "soundcloud"
-
-        cache_key = make_search_cache_key(query, target_limit, artist_mode, include_covers, source, offset)
-        cached = get_search_cache(cache_key)
-        if cached is not None:
-            return cached, None
 
         videos = search_soundcloud_api(query, target_limit, include_covers=include_covers)
         if not videos:
