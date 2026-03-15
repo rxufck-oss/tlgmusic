@@ -375,6 +375,7 @@
 
     let playlist = [];
     let searchTimeout = null;
+    let lastQuery = "";
     let searchAbort = null;
     let searchOffset = 0;
     const PAGE_SIZE = 20;
@@ -391,7 +392,8 @@
         return;
       }
 
-      searchTimeout = setTimeout(() => searchMusic(query, false), 400);
+      if (query.toLowerCase() === lastQuery) return;
+      searchTimeout = setTimeout(() => searchMusic(query, false), 550);
     });
 
     async function searchMusic(query, append) {
@@ -401,6 +403,7 @@
       }
 
       try {
+        lastQuery = query.toLowerCase();
         if (searchAbort) searchAbort.abort();
         searchAbort = new AbortController();
         const response = await fetch(SEARCH_URL, {

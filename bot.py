@@ -348,6 +348,18 @@ def get_spotify_new_releases(limit: int = 12, country: str = "US") -> dict:
             proxy=SPOTIFY_PROXY or None,
         )
         albums_raw = (((album_search or {}).get("albums") or {}).get("items")) or []
+    if not albums_raw:
+        current_year = time.gmtime().tm_year
+        year_search = http_json_request(
+            f"https://api.spotify.com/v1/search?q=year%3A{current_year}&type=album&limit={safe_limit}&market={safe_country}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0",
+            },
+            proxy=SPOTIFY_PROXY or None,
+        )
+        albums_raw = (((year_search or {}).get("albums") or {}).get("items")) or []
     albums = []
     tracks = []
     for album in albums_raw:
@@ -379,6 +391,18 @@ def get_spotify_new_releases(limit: int = 12, country: str = "US") -> dict:
         proxy=SPOTIFY_PROXY or None,
     )
     items = (((track_search or {}).get("tracks") or {}).get("items")) or []
+    if not items:
+        current_year = time.gmtime().tm_year
+        track_year = http_json_request(
+            f"https://api.spotify.com/v1/search?q=year%3A{current_year}&type=track&limit={safe_limit}&market={safe_country}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0",
+            },
+            proxy=SPOTIFY_PROXY or None,
+        )
+        items = (((track_year or {}).get("tracks") or {}).get("items")) or []
     for it in items:
         artists = it.get("artists") or []
         artist = ", ".join([a.get("name", "") for a in artists if a.get("name")]).strip() or "Unknown Artist"
