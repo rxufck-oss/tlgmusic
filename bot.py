@@ -56,6 +56,7 @@ SEARCH_CACHE_TTL = int(os.getenv("SEARCH_CACHE_TTL", "300"))
 SEARCH_CACHE_MAX_ITEMS = int(os.getenv("SEARCH_CACHE_MAX_ITEMS", "200"))
 NEW_RELEASES_CACHE_TTL = int(os.getenv("NEW_RELEASES_CACHE_TTL", "600"))
 WEBAPP_STATIC_DIR = os.getenv("WEBAPP_STATIC_DIR", "").strip()
+SPOTIFY_META_LIMIT = int(os.getenv("SPOTIFY_META_LIMIT", "10"))
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
 SPOTIFY_PROXY = os.getenv("SPOTIFY_PROXY", "").strip()
@@ -336,6 +337,17 @@ def get_spotify_new_releases(limit: int = 12, country: str = "US") -> dict:
         return {"albums": [], "tracks": []}
 
     albums_raw = ((payload.get("albums") or {}).get("items")) or []
+    if not albums_raw:
+        album_search = http_json_request(
+            f"https://api.spotify.com/v1/search?q=tag%3Anew&type=album&limit={safe_limit}&market={safe_country}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0",
+            },
+            proxy=SPOTIFY_PROXY or None,
+        )
+        albums_raw = (((album_search or {}).get("albums") or {}).get("items")) or []
     albums = []
     tracks = []
     for album in albums_raw:
@@ -693,7 +705,11 @@ def search_music(
         if videos:
             if include_meta and is_spotify_configured():
                 enriched = []
-                for item in videos:
+                limit = max(0, min(SPOTIFY_META_LIMIT, len(videos)))
+                for idx, item in enumerate(videos):
+                    if limit and idx >= limit:
+                        enriched.append(item)
+                        continue
                     meta = spotify_lookup_track(item.get("title", ""), item.get("artist"))
                     if meta:
                         item.update(
