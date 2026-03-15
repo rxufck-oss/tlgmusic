@@ -9,6 +9,7 @@ services:
       - "8443:8443"
     volumes:
       - .:/app
+      - /var/www/tlgmusic:/var/www/tlgmusic:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: always # Только один раз!

@@ -54,6 +54,8 @@ WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8443"))
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/telegram").strip()
 SEARCH_CACHE_TTL = int(os.getenv("SEARCH_CACHE_TTL", "300"))
 SEARCH_CACHE_MAX_ITEMS = int(os.getenv("SEARCH_CACHE_MAX_ITEMS", "200"))
+NEW_RELEASES_CACHE_TTL = int(os.getenv("NEW_RELEASES_CACHE_TTL", "600"))
+WEBAPP_STATIC_DIR = os.getenv("WEBAPP_STATIC_DIR", "").strip()
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
 SPOTIFY_PROXY = os.getenv("SPOTIFY_PROXY", "").strip()
@@ -73,6 +75,7 @@ DOWNLOAD_CACHE: dict[str, dict] = {}
 USER_LAST_SEARCH_TS: dict[int, float] = {}
 SEARCH_CACHE: dict[str, dict] = {}
 SPOTIFY_TOKEN_CACHE: dict[str, float | str] = {"token": "", "expires_at": 0}
+NEW_RELEASES_CACHE: dict[str, dict] = {}
 DB_CONN = None
 HTTP_API_THREAD = None
 SEND_LOOP = None
@@ -284,7 +287,119 @@ def get_spotify_token() -> str | None:
     return token
 
 
-def search_spotify(query: str, limit: int = 20) -> list:
+def get_new_releases_cache_key(limit: int, country: str) -> str:
+    return f"{country.upper()}|{limit}"
+
+
+def get_cached_new_releases(key: str) -> dict | None:
+    item = NEW_RELEASES_CACHE.get(key)
+    if not item:
+        return None
+    if time.time() - item.get("created_at", 0) > NEW_RELEASES_CACHE_TTL:
+        NEW_RELEASES_CACHE.pop(key, None)
+        return None
+    return item.get("payload")
+
+
+def set_cached_new_releases(key: str, payload: dict) -> None:
+    NEW_RELEASES_CACHE[key] = {"payload": payload, "created_at": time.time()}
+
+
+def get_spotify_new_releases(limit: int = 12, country: str = "US") -> dict:
+    token = get_spotify_token()
+    if not token:
+        return {"albums": [], "tracks": []}
+
+    safe_limit = max(1, min(limit, 30))
+    safe_country = (country or "US").upper()
+    cache_key = get_new_releases_cache_key(safe_limit, safe_country)
+    cached = get_cached_new_releases(cache_key)
+    if cached is not None:
+        return cached
+
+    url = (
+        "https://api.spotify.com/v1/browse/new-releases"
+        f"?limit={safe_limit}&country={urllib.parse.quote(safe_country)}"
+    )
+    payload = http_json_request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0",
+        },
+        proxy=SPOTIFY_PROXY or None,
+    )
+    if not payload:
+        return {"albums": [], "tracks": []}
+
+    albums_raw = ((payload.get("albums") or {}).get("items")) or []
+    albums = []
+    tracks = []
+    for album in albums_raw:
+        artists = album.get("artists") or []
+        artist = ", ".join([a.get("name", "") for a in artists if a.get("name")]).strip() or "Unknown Artist"
+        images = album.get("images") or []
+        cover = images[0].get("url") if images else None
+        albums.append(
+            {
+                "type": "album",
+                "album_id": album.get("id"),
+                "album_name": album.get("name"),
+                "artist": artist,
+                "cover_url": cover,
+                "release_date": album.get("release_date"),
+                "url": ((album.get("external_urls") or {}).get("spotify") or ""),
+                "source": "spotify",
+            }
+        )
+
+    for album in albums_raw[: min(10, len(albums_raw))]:
+        album_id = album.get("id")
+        if not album_id:
+            continue
+        track_payload = http_json_request(
+            f"https://api.spotify.com/v1/albums/{album_id}/tracks?limit=1",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0",
+            },
+            proxy=SPOTIFY_PROXY or None,
+        )
+        if not track_payload:
+            continue
+        items = track_payload.get("items") or []
+        if not items:
+            continue
+        it = items[0]
+        artists = it.get("artists") or []
+        artist = ", ".join([a.get("name", "") for a in artists if a.get("name")]).strip() or "Unknown Artist"
+        duration_ms = int(it.get("duration_ms") or 0)
+        mins = duration_ms // 60000
+        secs = (duration_ms % 60000) // 1000
+        images = album.get("images") or []
+        cover = images[0].get("url") if images else None
+        tracks.append(
+            {
+                "type": "track",
+                "id": it.get("id"),
+                "spotify_id": it.get("id"),
+                "title": it.get("name", "Без названия"),
+                "artist": artist,
+                "duration": f"{mins}:{secs:02d}" if duration_ms else "?:??",
+                "url": ((it.get("external_urls") or {}).get("spotify") or ""),
+                "cover_url": cover,
+                "source": "spotify",
+            }
+        )
+
+    result = {"albums": albums, "tracks": tracks}
+    set_cached_new_releases(cache_key, result)
+    return result
+
+
+def search_spotify(query: str, limit: int = 20, include_meta: bool = False) -> list:
     token = get_spotify_token()
     if not token:
         return []
@@ -314,18 +429,31 @@ def search_spotify(query: str, limit: int = 20) -> list:
         duration_ms = int(it.get("duration_ms") or 0)
         mins = duration_ms // 60000
         secs = (duration_ms % 60000) // 1000
-        out.append(
-            {
-                "id": it.get("id"),
-                "spotify_id": it.get("id"),
-                "title": it.get("name", "Без названия"),
-                "artist": artist,
-                "duration": f"{mins}:{secs:02d}" if duration_ms else "?:??",
-                "url": ((it.get("external_urls") or {}).get("spotify") or ""),
-                "cover_url": cover,
-                "source": "spotify",
-            }
-        )
+        item = {
+            "id": it.get("id"),
+            "spotify_id": it.get("id"),
+            "title": it.get("name", "Без названия"),
+            "artist": artist,
+            "duration": f"{mins}:{secs:02d}" if duration_ms else "?:??",
+            "url": ((it.get("external_urls") or {}).get("spotify") or ""),
+            "cover_url": cover,
+            "source": "spotify",
+        }
+        if include_meta:
+            album = it.get("album") or {}
+            external_ids = it.get("external_ids") or {}
+            item.update(
+                {
+                    "album_name": album.get("name"),
+                    "album_id": album.get("id"),
+                    "release_date": album.get("release_date"),
+                    "popularity": it.get("popularity"),
+                    "explicit": it.get("explicit"),
+                    "preview_url": it.get("preview_url"),
+                    "isrc": external_ids.get("isrc"),
+                }
+            )
+        out.append(item)
     return [x for x in out if x.get("url")]
 
 
@@ -475,6 +603,7 @@ def search_music(
     artist_mode: bool = False,
     include_covers: bool = True,
     source: str = "soundcloud",
+    include_meta: bool = False,
 ) -> tuple[list, str | None]:
     try:
         target_limit = max(1, min(limit or MAX_SEARCH_RESULTS, 200))
@@ -497,7 +626,7 @@ def search_music(
         if source == "spotify":
             if not is_spotify_configured():
                 return [], "Spotify не настроен. Добавьте SPOTIFY_CLIENT_ID и SPOTIFY_CLIENT_SECRET."
-            spotify_results = search_spotify(query, target_limit)
+            spotify_results = search_spotify(query, target_limit, include_meta=include_meta)
             if spotify_results:
                 return spotify_results, None
             return [], "Spotify не вернул результаты. Попробуйте другой запрос."
@@ -774,10 +903,13 @@ def start_http_api() -> None:
     app = Flask(__name__)
     ensure_send_loop()
     app_root = os.path.dirname(os.path.abspath(__file__))
+    web_root = WEBAPP_STATIC_DIR or app_root
 
     @app.get("/")
     def webapp_index():
-        return send_from_directory(app_root, "index.html")
+        resp = send_from_directory(web_root, "index.html")
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
 
     @app.get("/api/health")
     def api_health():
@@ -798,13 +930,29 @@ def start_http_api() -> None:
 
         artist_mode = bool(payload.get("artistMode")) or bool(payload.get("artist"))
         include_covers = bool(payload.get("includeCovers", False))
+        include_meta = bool(payload.get("includeMeta", False))
         source = str(payload.get("source") or "soundcloud").strip().lower()
         if artist_mode:
             requested_limit = max(10, min(requested_limit, 200))
         else:
             requested_limit = max(5, min(requested_limit, 60))
-        videos, error = search_music(query, requested_limit, artist_mode, include_covers, source)
+        videos, error = search_music(query, requested_limit, artist_mode, include_covers, source, include_meta)
         return jsonify({"ok": len(videos) > 0, "error": error, "results": videos})
+
+    @app.get("/api/new-releases")
+    def api_new_releases():
+        if not is_spotify_configured():
+            return jsonify({"ok": False, "error": "Spotify не настроен", "albums": [], "tracks": []}), 400
+
+        raw_limit = request.args.get("limit")
+        raw_country = request.args.get("country")
+        try:
+            requested_limit = int(raw_limit) if raw_limit is not None else 12
+        except (TypeError, ValueError):
+            requested_limit = 12
+        country = str(raw_country or "US").strip()[:2]
+        payload = get_spotify_new_releases(requested_limit, country)
+        return jsonify({"ok": True, "albums": payload.get("albums", []), "tracks": payload.get("tracks", [])})
 
     @app.post("/api/download")
     def api_download():
