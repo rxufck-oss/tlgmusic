@@ -160,8 +160,10 @@ def prune_download_cache() -> None:
         DOWNLOAD_CACHE.pop(k, None)
 
 
-def make_search_cache_key(query: str, limit: int, artist_mode: bool, include_covers: bool, source: str) -> str:
-    return f"{source}|{query.lower().strip()}|{limit}|{int(artist_mode)}|{int(include_covers)}"
+def make_search_cache_key(
+    query: str, limit: int, artist_mode: bool, include_covers: bool, source: str, offset: int
+) -> str:
+    return f"{source}|{query.lower().strip()}|{limit}|{offset}|{int(artist_mode)}|{int(include_covers)}"
 
 
 def prune_search_cache() -> None:
@@ -399,14 +401,18 @@ def get_spotify_new_releases(limit: int = 12, country: str = "US") -> dict:
     return result
 
 
-def search_spotify(query: str, limit: int = 20, include_meta: bool = False) -> list:
+def search_spotify(query: str, limit: int = 20, include_meta: bool = False, offset: int = 0) -> list:
     token = get_spotify_token()
     if not token:
         return []
 
     safe_limit = max(1, min(limit, 50))
+    safe_offset = max(0, min(offset, 1000))
     encoded_q = urllib.parse.quote(query)
-    url = f"https://api.spotify.com/v1/search?q={encoded_q}&type=track&limit={safe_limit}"
+    url = (
+        f"https://api.spotify.com/v1/search?q={encoded_q}&type=track&limit={safe_limit}"
+        f"&offset={safe_offset}"
+    )
     payload = http_json_request(
         url,
         headers={
@@ -653,6 +659,7 @@ def search_music(
     include_covers: bool = True,
     source: str = "soundcloud",
     include_meta: bool = False,
+    offset: int = 0,
 ) -> tuple[list, str | None]:
     try:
         target_limit = max(1, min(limit or MAX_SEARCH_RESULTS, 200))
@@ -675,13 +682,13 @@ def search_music(
         if source == "spotify":
             if not is_spotify_configured():
                 return [], "Spotify не настроен. Добавьте SPOTIFY_CLIENT_ID и SPOTIFY_CLIENT_SECRET."
-            spotify_results = search_spotify(query, target_limit, include_meta=include_meta)
+            spotify_results = search_spotify(query, target_limit, include_meta=include_meta, offset=offset)
             if spotify_results:
                 return spotify_results, None
             # Fallback to SoundCloud if Spotify is blocked or returns nothing.
             source = "soundcloud"
 
-        cache_key = make_search_cache_key(query, target_limit, artist_mode, include_covers, source)
+        cache_key = make_search_cache_key(query, target_limit, artist_mode, include_covers, source, offset)
         cached = get_search_cache(cache_key)
         if cached is not None:
             return cached, None
@@ -994,10 +1001,15 @@ def start_http_api() -> None:
             return jsonify({"ok": False, "error": "query is required", "results": []}), 400
 
         raw_limit = payload.get("limit")
+        raw_offset = payload.get("offset")
         try:
             requested_limit = int(raw_limit) if raw_limit is not None else MAX_SEARCH_RESULTS
         except (TypeError, ValueError):
             requested_limit = MAX_SEARCH_RESULTS
+        try:
+            requested_offset = int(raw_offset) if raw_offset is not None else 0
+        except (TypeError, ValueError):
+            requested_offset = 0
 
         artist_mode = bool(payload.get("artistMode")) or bool(payload.get("artist"))
         include_covers = bool(payload.get("includeCovers", False))
@@ -1007,7 +1019,15 @@ def start_http_api() -> None:
             requested_limit = max(10, min(requested_limit, 200))
         else:
             requested_limit = max(5, min(requested_limit, 60))
-        videos, error = search_music(query, requested_limit, artist_mode, include_covers, source, include_meta)
+        videos, error = search_music(
+            query,
+            requested_limit,
+            artist_mode,
+            include_covers,
+            source,
+            include_meta,
+            requested_offset,
+        )
         return jsonify({"ok": len(videos) > 0, "error": error, "results": videos})
 
     @app.get("/api/new-releases")

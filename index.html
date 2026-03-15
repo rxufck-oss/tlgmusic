@@ -144,6 +144,20 @@
     .results {
       padding: 8px 16px;
     }
+    .load-more-wrap {
+      display: none;
+      padding: 8px 16px 24px;
+      text-align: center;
+    }
+    .load-more-btn {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      color: var(--text-primary);
+      border-radius: 12px;
+      padding: 10px 16px;
+      font-size: 14px;
+      cursor: pointer;
+    }
 
     .track {
       background: var(--bg-secondary);
@@ -337,6 +351,9 @@
       <div class="empty-text">Введите название трека или исполнителя</div>
     </div>
   </div>
+  <div class="load-more-wrap" id="loadMoreWrap">
+    <button class="load-more-btn" id="loadMoreBtn">Загрузить еще</button>
+  </div>
 
   <script>
     const tg = window.Telegram?.WebApp;
@@ -358,29 +375,42 @@
 
     let playlist = [];
     let searchTimeout = null;
+    let searchAbort = null;
+    let searchOffset = 0;
+    const PAGE_SIZE = 30;
+
+    const loadMoreWrap = document.getElementById("loadMoreWrap");
+    const loadMoreBtn = document.getElementById("loadMoreBtn");
 
     searchInput.addEventListener("input", (e) => {
       clearTimeout(searchTimeout);
       const query = e.target.value.trim();
 
-      if (!query) {
+      if (!query || query.length < 2) {
         showEmpty();
         return;
       }
 
-      searchTimeout = setTimeout(() => searchMusic(query), 400);
+      searchTimeout = setTimeout(() => searchMusic(query, false), 400);
     });
 
-    async function searchMusic(query) {
-      showLoading();
+    async function searchMusic(query, append) {
+      if (!append) {
+        searchOffset = 0;
+        showLoading();
+      }
 
       try {
+        if (searchAbort) searchAbort.abort();
+        searchAbort = new AbortController();
         const response = await fetch(SEARCH_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          signal: searchAbort.signal,
           body: JSON.stringify({
             query,
-            limit: 30,
+            limit: PAGE_SIZE,
+            offset: searchOffset,
             source: "spotify",
             artistMode: false,
             includeMeta: true,
@@ -391,9 +421,21 @@
         if (!response.ok) throw new Error("Search failed");
 
         const data = await response.json();
-        playlist = (data.results || []).map(mapTrack);
-        displayResults(playlist);
+        const incoming = (data.results || []).map(mapTrack);
+        if (!append) {
+          playlist = incoming;
+        } else {
+          playlist = playlist.concat(incoming);
+        }
+        displayResults(playlist, append);
+        if (incoming.length >= PAGE_SIZE) {
+          searchOffset += PAGE_SIZE;
+          loadMoreWrap.style.display = "block";
+        } else {
+          loadMoreWrap.style.display = "none";
+        }
       } catch (error) {
+        if (error?.name === "AbortError") return;
         console.error("Search error:", error);
         showError("Не удалось найти треки");
       }
@@ -411,13 +453,14 @@
       };
     }
 
-    function displayResults(tracks) {
+    function displayResults(tracks, append) {
       if (!tracks.length) {
         showEmpty("Ничего не найдено");
+        loadMoreWrap.style.display = "none";
         return;
       }
 
-      results.innerHTML = tracks.map((track, index) => `
+      const html = tracks.map((track, index) => `
         <div class="track" data-i="${index}">
           ${track.cover ?
             `<img src="${escapeHtml(track.cover)}" class="track-thumbnail" alt="">` :
@@ -430,6 +473,9 @@
           <div class="track-play-icon">▶️</div>
         </div>
       `).join("");
+
+      if (!append) results.innerHTML = html;
+      else results.innerHTML = html;
 
       results.querySelectorAll(".track").forEach((el) => {
         el.onclick = () => {
@@ -480,13 +526,32 @@
         const response = await fetch(`${NEW_RELEASES_URL}?limit=12&country=US`);
         if (!response.ok) throw new Error("New releases failed");
         const data = await response.json();
+        if (!data.ok) {
+          showNewReleasesEmpty();
+          return;
+        }
         const albums = data.albums || [];
         const tracks = data.tracks || [];
+        if (!albums.length && !tracks.length) {
+          showNewReleasesEmpty();
+          return;
+        }
         renderNewReleases(albums, tracks);
       } catch (error) {
         console.error("New releases error:", error);
-        newReleasesEl.innerHTML = "";
+        showNewReleasesEmpty();
       }
+    }
+
+    function showNewReleasesEmpty() {
+      newReleasesEl.innerHTML = `
+        <div class="release-card">
+          <div class="release-cover"></div>
+          <div class="release-title">Новинки недоступны</div>
+          <div class="release-sub">Попробуйте позже</div>
+          <div class="release-tag">Spotify</div>
+        </div>
+      `;
     }
 
     function renderNewReleases(albums, tracks) {
@@ -542,6 +607,7 @@
           <div class="loading-text">Поиск треков...</div>
         </div>
       `;
+      loadMoreWrap.style.display = "none";
     }
 
     function showEmpty(text = "Введите название трека или исполнителя") {
@@ -584,6 +650,11 @@
 
     loadNewReleases();
     setTimeout(() => searchInput.focus(), 300);
+
+    loadMoreBtn.onclick = () => {
+      const q = searchInput.value.trim();
+      if (q) searchMusic(q, true);
+    };
   </script>
 </body>
 </html>
