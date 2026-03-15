@@ -678,7 +678,8 @@ def search_music(
             spotify_results = search_spotify(query, target_limit, include_meta=include_meta)
             if spotify_results:
                 return spotify_results, None
-            return [], "Spotify не вернул результаты. Попробуйте другой запрос."
+            # Fallback to SoundCloud if Spotify is blocked or returns nothing.
+            source = "soundcloud"
 
         cache_key = make_search_cache_key(query, target_limit, artist_mode, include_covers, source)
         cached = get_search_cache(cache_key)
