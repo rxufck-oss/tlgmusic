@@ -3,282 +3,340 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>TLG Music</title>
+  <title>Music</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
-    :root {
-      --bg: #f6f7f9;
-      --line: #e9edf2;
-      --text: #171b22;
-      --sub: #6c7480;
-      --accent: #ff5a00;
-      --accent-2: #ff7a1a;
-      --ok: #2ca56f;
-      --bad: #d64c4c;
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
     }
 
-    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg-primary: var(--tg-theme-bg-color, #0a0a0a);
+      --bg-secondary: var(--tg-theme-secondary-bg-color, #1a1a1a);
+      --text-primary: var(--tg-theme-text-color, #ffffff);
+      --text-secondary: var(--tg-theme-hint-color, #8e8e93);
+      --accent: var(--tg-theme-button-color, #007aff);
+      --accent-hover: #0056b3;
+      --border: rgba(255, 255, 255, 0.1);
+    }
 
     body {
-      font-family: "Segoe UI", "Trebuchet MS", "Helvetica Neue", sans-serif;
-      color: var(--text);
-      background:
-        radial-gradient(900px 400px at 110% -10%, #fff4ec 0%, transparent 55%),
-        radial-gradient(800px 320px at -10% -10%, #f2f6ff 0%, transparent 50%),
-        var(--bg);
-      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      overflow-x: hidden;
+      padding-bottom: 48px;
     }
 
-    .app { max-width: 860px; margin: 0 auto; padding: 16px 12px 22px; }
-
-    .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-    .brand { display: flex; gap: 10px; align-items: center; }
-    .logo {
-      width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center;
-      color: #fff; font-weight: 800; background: linear-gradient(135deg, var(--accent), var(--accent-2));
-      box-shadow: 0 10px 20px rgba(255, 90, 0, .22);
+    .search-container {
+      position: sticky;
+      top: 0;
+      background: var(--bg-primary);
+      backdrop-filter: blur(20px);
+      z-index: 100;
+      padding: 20px 20px 16px;
+      border-bottom: 1px solid var(--border);
     }
 
-    .brand h1 { font-size: 18px; }
-    .brand p { font-size: 12px; color: var(--sub); margin-top: 2px; }
-
-    .chip {
-      border: 1px solid var(--line);
-      background: #fff;
-      border-radius: 999px;
-      padding: 7px 10px;
-      font-size: 12px;
-      color: var(--sub);
+    .search-wrapper {
+      position: relative;
     }
 
-    .search { position: relative; margin-bottom: 14px; }
-    .search input {
-      width: 100%; height: 50px; border-radius: 14px; border: 1px solid var(--line);
-      background: #fff; color: var(--text); font-size: 15px; padding: 0 118px 0 14px; outline: none;
+    .search-icon {
+      position: absolute;
+      left: 16px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-secondary);
+      font-size: 20px;
+      pointer-events: none;
     }
 
-    .search input:focus { border-color: #d9e3ef; box-shadow: 0 0 0 3px rgba(31, 97, 206, .08); }
-
-    .search button {
-      position: absolute; right: 6px; top: 6px; height: 38px; border: 0; border-radius: 10px;
-      background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff;
-      font-weight: 700; font-size: 13px; padding: 0 12px; cursor: pointer;
-    }
-
-    .source-switch {
-      display: flex;
-      gap: 8px;
-      margin-bottom: 12px;
-    }
-
-    .source-btn {
-      border: 1px solid var(--line);
-      background: #fff;
-      color: #4d5969;
-      border-radius: 999px;
-      height: 32px;
-      padding: 0 12px;
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-    }
-
-    .source-btn.active {
-      border-color: #ffd9bf;
-      background: #fff1e5;
-      color: #9a4b11;
-    }
-
-    .section { margin-bottom: 14px; }
-    .section h2 { font-size: 14px; margin-bottom: 8px; }
-    .muted { color: var(--sub); font-size: 12px; }
-
-    .row-scroll {
-      display: grid; grid-auto-flow: column; grid-auto-columns: minmax(170px, 1fr);
-      gap: 10px; overflow-x: auto; padding-bottom: 4px;
-    }
-
-    .row-scroll::-webkit-scrollbar { display: none; }
-
-    .playlist {
-      background: #fff; border: 1px solid var(--line); border-radius: 14px;
-      padding: 12px; cursor: pointer;
-    }
-
-    .playlist .tag {
-      display: inline-block; font-size: 11px; color: #a15f2f;
-      background: #fff2e7; border: 1px solid #ffe2cb; border-radius: 999px;
-      padding: 4px 8px; margin-bottom: 8px;
-    }
-
-    .playlist b { display: block; font-size: 14px; margin-bottom: 4px; }
-
-    .artists { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-
-    .artist {
-      border: 1px solid var(--line); background: #fff; border-radius: 14px;
-      padding: 12px; display: flex; gap: 10px; align-items: center; cursor: pointer;
-    }
-
-    .avatar {
-      width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center;
-      color: #3e4a57; font-weight: 700; background: linear-gradient(135deg, #ebf0f8, #f7f9fc);
-      border: 1px solid #dce5f0; flex: 0 0 auto;
-    }
-
-    .artist b { font-size: 13px; display: block; }
-    .artist span { font-size: 12px; color: var(--sub); }
-
-    .state {
-      border: 1px solid var(--line); border-radius: 12px; background: #fff;
-      padding: 10px 12px; margin-bottom: 12px; font-size: 13px; color: var(--sub); display: none;
-    }
-
-    .state.show { display: block; }
-
-    .error { border-color: #f0d4d4; background: #fff5f5; color: var(--bad); }
-
-    .results-shell {
-      border: 1px solid var(--line);
-      background: #fff;
+    .search-input {
+      width: 100%;
+      padding: 14px 16px 14px 48px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
       border-radius: 14px;
-      padding: 10px;
-      max-height: 48vh;
-      overflow: auto;
-      margin-bottom: 10px;
-      display: none;
+      font-size: 17px;
+      color: var(--text-primary);
+      transition: all 0.3s ease;
+      outline: none;
     }
 
-    .list { display: grid; gap: 10px; }
+    .search-input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 4px rgba(0, 122, 255, 0.1);
+    }
+
+    .search-input::placeholder {
+      color: var(--text-secondary);
+    }
+
+    .section-title {
+      padding: 14px 16px 8px;
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .new-releases {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      padding: 0 16px 12px;
+    }
+
+    .release-card {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 10px;
+      display: grid;
+      gap: 8px;
+      cursor: pointer;
+      transition: transform 0.2s ease;
+    }
+
+    .release-card:active {
+      transform: scale(0.98);
+    }
+
+    .release-cover {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      border-radius: 12px;
+      object-fit: cover;
+      background: linear-gradient(135deg, var(--accent) 0%, #764ba2 100%);
+    }
+
+    .release-title {
+      font-weight: 600;
+      font-size: 14px;
+      line-height: 1.3;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      min-height: 36px;
+    }
+
+    .release-sub {
+      font-size: 12px;
+      color: var(--text-secondary);
+      display: -webkit-box;
+      -webkit-line-clamp: 1;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .release-tag {
+      font-size: 11px;
+      color: var(--text-secondary);
+      border: 1px solid var(--border);
+      padding: 4px 8px;
+      border-radius: 999px;
+      display: inline-block;
+      width: fit-content;
+    }
+
+    .results {
+      padding: 8px 16px;
+    }
 
     .track {
-      border: 1px solid var(--line); border-radius: 12px; background: #fff;
-      padding: 10px; display: grid; grid-template-columns: 56px 1fr; gap: 10px;
-    }
-
-    .cover {
-      width: 56px; height: 56px; border-radius: 10px; overflow: hidden;
-      border: 1px solid #ecf0f5; background: #f2f5f9; display: grid; place-items: center;
-      color: #8e98a6; font-size: 11px;
-    }
-
-    .cover img { width: 100%; height: 100%; object-fit: cover; }
-
-    .title {
-      font-size: 14px; font-weight: 700; white-space: nowrap; overflow: hidden;
-      text-overflow: ellipsis; margin-bottom: 3px;
-    }
-
-    .sub {
-      font-size: 12px; color: var(--sub); margin-bottom: 8px;
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    }
-
-    .meta-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-
-    .dur {
-      font-size: 11px; color: var(--sub); border: 1px solid var(--line);
-      border-radius: 8px; padding: 4px 7px;
-    }
-
-    .btns { display: flex; gap: 6px; }
-
-    .btn {
-      border: 0; border-radius: 8px; height: 30px; padding: 0 9px;
-      font-size: 12px; font-weight: 700; cursor: pointer;
-    }
-
-    .btn-open { color: #475367; background: #f1f4f8; border: 1px solid #e2e8ef; }
-    .btn-dl { color: #fff; background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
-
-    .actions { display: none; gap: 8px; margin-bottom: 10px; }
-    .actions.show { display: flex; }
-
-    .btn-lite {
-      border: 1px solid var(--line);
-      background: #fff;
-      color: #3a495c;
-      border-radius: 10px;
-      height: 34px;
-      padding: 0 12px;
-      font-size: 12px;
-      font-weight: 600;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 12px;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
       cursor: pointer;
+      transition: all 0.2s ease;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .track::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: linear-gradient(135deg, var(--accent) 0%, transparent 100%);
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+
+    .track:active {
+      transform: scale(0.98);
+    }
+
+    .track:active::before {
+      opacity: 0.05;
+    }
+
+    .track-thumbnail {
+      width: 64px;
+      height: 64px;
+      border-radius: 12px;
+      object-fit: cover;
+      background: linear-gradient(135deg, var(--accent) 0%, #764ba2 100%);
+      flex-shrink: 0;
+      position: relative;
+      z-index: 1;
+    }
+
+    .track-thumbnail.placeholder {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 28px;
+    }
+
+    .track-info {
+      flex: 1;
+      overflow: hidden;
+      position: relative;
+      z-index: 1;
+    }
+
+    .track-title {
+      font-weight: 600;
+      font-size: 16px;
+      line-height: 1.3;
+      margin-bottom: 4px;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .track-duration {
+      font-size: 14px;
+      color: var(--text-secondary);
+      font-weight: 500;
+    }
+
+    .track-play-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      background: var(--accent);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      flex-shrink: 0;
+      position: relative;
+      z-index: 1;
+      opacity: 0;
+      transform: scale(0.8);
+      transition: all 0.2s ease;
+    }
+
+    .track:hover .track-play-icon {
+      opacity: 1;
+      transform: scale(1);
     }
 
     .empty {
-      border: 1px dashed #dbe3ec; background: #fff; border-radius: 12px;
-      padding: 18px 12px; text-align: center; color: var(--sub); font-size: 13px;
+      text-align: center;
+      padding: 80px 40px;
     }
 
-    .toast {
-      position: fixed; left: 12px; right: 12px; bottom: 12px;
-      border-radius: 10px; padding: 10px 12px; text-align: center;
-      color: #fff; font-size: 13px; transform: translateY(130%);
-      transition: transform .22s ease; z-index: 40;
+    .empty-icon {
+      font-size: 80px;
+      margin-bottom: 20px;
+      opacity: 0.5;
     }
 
-    .toast.show { transform: translateY(0); }
-    .toast.ok { background: rgba(44,165,111,.96); }
-    .toast.bad { background: rgba(214,76,76,.96); }
+    .empty-title {
+      font-size: 20px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      opacity: 0.9;
+    }
 
-    @media (max-width: 560px) {
-      .artists { grid-template-columns: 1fr; }
-      .row-scroll { grid-auto-columns: minmax(160px, 1fr); }
-      .actions { flex-direction: column; }
+    .empty-text {
+      font-size: 15px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+
+    .loading {
+      text-align: center;
+      padding: 60px 40px;
+    }
+
+    .spinner {
+      width: 48px;
+      height: 48px;
+      margin: 0 auto 20px;
+      border: 3px solid rgba(255, 255, 255, 0.1);
+      border-top: 3px solid var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .loading-text {
+      color: var(--text-secondary);
+      font-size: 15px;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .track {
+      animation: fadeIn 0.3s ease backwards;
+    }
+
+    .track:nth-child(1) { animation-delay: 0.05s; }
+    .track:nth-child(2) { animation-delay: 0.1s; }
+    .track:nth-child(3) { animation-delay: 0.15s; }
+    .track:nth-child(4) { animation-delay: 0.2s; }
+    .track:nth-child(5) { animation-delay: 0.25s; }
+
+    @media (max-width: 380px) {
+      .search-input { font-size: 16px; }
+      .track-title { font-size: 15px; }
     }
   </style>
 </head>
 <body>
-  <main class="app">
-    <header class="top">
-      <div class="brand">
-        <div class="logo">TM</div>
-        <div>
-          <h1>TLG Music</h1>
-          <p>Light minimal player for Telegram</p>
-        </div>
-      </div>
-      <div class="chip" id="userChip">@guest</div>
-    </header>
-
-    <section class="search">
-      <input id="searchInput" type="text" placeholder="Поиск треков или артистов" />
-      <button id="searchBtn">Найти</button>
-    </section>
-
-    <div class="source-switch">
-      <button class="source-btn active" data-source="soundcloud" id="srcSoundcloud">SoundCloud</button>
-      <button class="source-btn" data-source="spotify" id="srcSpotify">Spotify</button>
+  <div class="search-container">
+    <div class="search-wrapper">
+      <span class="search-icon">🔍</span>
+      <input
+        type="text"
+        class="search-input"
+        id="searchInput"
+        placeholder="Найти музыку..."
+        autocomplete="off"
+      />
     </div>
+  </div>
 
-    <section class="section">
-      <h2>Подборки</h2>
-      <div class="row-scroll" id="playlists"></div>
-    </section>
+  <div class="section-title">Новинки Spotify</div>
+  <div class="new-releases" id="newReleases"></div>
 
-    <section class="section">
-      <h2>Популярные артисты</h2>
-      <p class="muted" style="margin-bottom:8px;">Открой карточку для быстрого списка. Полный список догружается кнопкой.</p>
-      <div class="artists" id="artists"></div>
-    </section>
-
-    <div class="state" id="state"></div>
-    <div class="state error" id="error"></div>
-
-    <div class="results-shell" id="resultsShell">
-      <section class="list" id="results"></section>
+  <div class="results" id="results">
+    <div class="empty">
+      <div class="empty-icon">🎵</div>
+      <div class="empty-title">Найдите свою музыку</div>
+      <div class="empty-text">Введите название трека или исполнителя</div>
     </div>
-
-    <div class="actions" id="actions">
-      <button class="btn-lite" id="showMoreBtn">Показать еще в списке</button>
-      <button class="btn-lite" id="loadMoreSourceBtn">Догрузить еще треки</button>
-    </div>
-
-    <div class="empty" id="empty">Выберите подборку, артиста или введите запрос выше.</div>
-  </main>
-
-  <div class="toast" id="toast"></div>
+  </div>
 
   <script>
     const tg = window.Telegram?.WebApp;
@@ -287,266 +345,112 @@
       tg.enableClosingConfirmation();
     }
 
-    const userId = tg?.initDataUnsafe?.user?.id || "demo";
-    const username = tg?.initDataUnsafe?.user?.username || "guest";
-    document.getElementById("userChip").textContent = `@${username}`;
-
     const API_BASE = window.location.origin;
     const SEARCH_URL = `${API_BASE}/api/search`;
     const DOWNLOAD_URL = `${API_BASE}/api/download`;
+    const NEW_RELEASES_URL = `${API_BASE}/api/new-releases`;
 
-    const ARTIST_INITIAL_LIMIT = 35;
-    const ARTIST_MAX_LIMIT = 180;
-    const ARTIST_STEP = 35;
-    const LIST_PAGE = 12;
+    const userId = tg?.initDataUnsafe?.user?.id || "demo";
 
-    const els = {
-      input: document.getElementById("searchInput"),
-      btn: document.getElementById("searchBtn"),
-      state: document.getElementById("state"),
-      error: document.getElementById("error"),
-      resultsShell: document.getElementById("resultsShell"),
-      results: document.getElementById("results"),
-      empty: document.getElementById("empty"),
-      playlists: document.getElementById("playlists"),
-      artists: document.getElementById("artists"),
-      actions: document.getElementById("actions"),
-      showMoreBtn: document.getElementById("showMoreBtn"),
-      loadMoreSourceBtn: document.getElementById("loadMoreSourceBtn"),
-      toast: document.getElementById("toast")
-    };
+    const searchInput = document.getElementById("searchInput");
+    const results = document.getElementById("results");
+    const newReleasesEl = document.getElementById("newReleases");
 
-    const playlists = [
-      { name: "Workout Boost", hint: "Энергично", query: "workout edm mix" },
-      { name: "Lo-Fi Focus", hint: "Для работы", query: "lofi hip hop" },
-      { name: "Night Drive", hint: "Ночной вайб", query: "night drive synthwave" },
-      { name: "Pop Fresh", hint: "Поп-хиты", query: "pop hits" },
-      { name: "Chill Mood", hint: "Расслабиться", query: "chill electronic" }
-    ];
+    let playlist = [];
+    let searchTimeout = null;
 
-    const artists = [
-      { name: "The Weeknd", genre: "R&B / Pop" },
-      { name: "Drake", genre: "Hip-Hop" },
-      { name: "Taylor Swift", genre: "Pop" },
-      { name: "Arctic Monkeys", genre: "Indie Rock" },
-      { name: "Billie Eilish", genre: "Alt Pop" },
-      { name: "Travis Scott", genre: "Hip-Hop" }
-    ];
+    searchInput.addEventListener("input", (e) => {
+      clearTimeout(searchTimeout);
+      const query = e.target.value.trim();
 
-    const state = {
-      tracks: [],
-      visibleCount: LIST_PAGE,
-      currentQuery: "",
-      currentSource: "soundcloud",
-      artistMode: false,
-      sourceLimit: 0,
-      lastRequestReturned: 0
-    };
-    const searchCache = new Map();
-
-    const esc = (s) => {
-      const d = document.createElement("div");
-      d.textContent = String(s ?? "");
-      return d.innerHTML;
-    };
-
-    function toast(msg, ok = true) {
-      els.toast.textContent = msg;
-      els.toast.className = `toast show ${ok ? "ok" : "bad"}`;
-      setTimeout(() => { els.toast.className = "toast"; }, 2400);
-    }
-
-    function setState(msg = "") {
-      if (!msg) {
-        els.state.className = "state";
-        els.state.textContent = "";
+      if (!query) {
+        showEmpty();
         return;
       }
-      els.state.textContent = msg;
-      els.state.className = "state show";
-    }
 
-    function setError(msg = "") {
-      if (!msg) {
-        els.error.className = "state error";
-        els.error.textContent = "";
-        return;
+      searchTimeout = setTimeout(() => searchMusic(query), 400);
+    });
+
+    async function searchMusic(query) {
+      showLoading();
+
+      try {
+        const response = await fetch(SEARCH_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            query,
+            limit: 30,
+            source: "soundcloud",
+            artistMode: false,
+            includeMeta: true,
+            includeCovers: false
+          })
+        });
+
+        if (!response.ok) throw new Error("Search failed");
+
+        const data = await response.json();
+        playlist = (data.results || []).map(mapTrack);
+        displayResults(playlist);
+      } catch (error) {
+        console.error("Search error:", error);
+        showError("Не удалось найти треки");
       }
-      els.error.textContent = msg;
-      els.error.className = "state error show";
     }
 
-    function setLoading(v) {
-      els.btn.disabled = v;
-      els.btn.textContent = v ? "..." : "Найти";
-    }
-
-    function mapTrack(raw, index) {
+    function mapTrack(raw) {
       return {
-        id: raw.id || raw.url || `${Date.now()}-${index}`,
-        source: raw.source || state.currentSource || "soundcloud",
+        id: raw.id || raw.url || "",
         title: raw.title || raw.name || "Без названия",
-        artist: raw.artist || raw.uploader || raw.channel || "Unknown Artist",
+        artist: raw.artist || raw.uploader || "Unknown Artist",
         duration: raw.duration || raw.duration_string || "?:??",
-        url: raw.url || raw.webpage_url || raw.trackUrl || "",
-        cover: raw.cover_url || raw.thumbnail || raw.artwork || ""
+        url: raw.url || raw.webpage_url || "",
+        cover: raw.cover_url || raw.thumbnail || "",
+        source: raw.source || "spotify"
       };
     }
 
-    function extractResults(payload) {
-      if (Array.isArray(payload)) return payload;
-      if (Array.isArray(payload?.results)) return payload.results;
-      if (Array.isArray(payload?.data?.results)) return payload.data.results;
-      return [];
-    }
-
-    function updateActionButtons() {
-      const hasMoreVisible = state.visibleCount < state.tracks.length;
-      const canLoadSourceMore = state.artistMode && state.lastRequestReturned >= state.sourceLimit && state.sourceLimit < ARTIST_MAX_LIMIT;
-
-      els.showMoreBtn.style.display = hasMoreVisible ? "inline-block" : "none";
-      els.loadMoreSourceBtn.style.display = canLoadSourceMore ? "inline-block" : "none";
-      els.actions.className = (hasMoreVisible || canLoadSourceMore) ? "actions show" : "actions";
-    }
-
-    function renderVisibleTracks() {
-      if (!state.tracks.length) {
-        els.results.innerHTML = "";
-        els.resultsShell.style.display = "none";
-        els.empty.style.display = "block";
-        updateActionButtons();
+    function displayResults(tracks) {
+      if (!tracks.length) {
+        showEmpty("Ничего не найдено");
         return;
       }
 
-      const visibleTracks = state.tracks.slice(0, state.visibleCount);
-      els.empty.style.display = "none";
-      els.resultsShell.style.display = "block";
+      results.innerHTML = tracks.map((track, index) => `
+        <div class="track" data-i="${index}">
+          ${track.cover ?
+            `<img src="${escapeHtml(track.cover)}" class="track-thumbnail" alt="">` :
+            `<div class="track-thumbnail placeholder">🎵</div>`
+          }
+          <div class="track-info">
+            <div class="track-title">${escapeHtml(track.title)}</div>
+            <div class="track-duration">${escapeHtml(track.artist)} • ${escapeHtml(track.duration)}</div>
+          </div>
+          <div class="track-play-icon">▶️</div>
+        </div>
+      `).join("");
 
-      els.results.innerHTML = visibleTracks.map((t, i) => {
-        const cover = t.cover ? `<img src="${esc(t.cover)}" alt="cover" loading="lazy" />` : "ART";
-        return `
-          <article class="track">
-            <div class="cover">${cover}</div>
-            <div>
-              <div class="title">${esc(t.title)}</div>
-              <div class="sub">${esc(t.artist)}</div>
-              <div class="meta-row">
-                <span class="dur">${esc(t.duration)}</span>
-                <div class="btns">
-                  ${t.url ? `<button class="btn btn-open" data-open="${esc(t.url)}">Открыть</button>` : ""}
-                  <button class="btn btn-dl" data-i="${i}">MP3</button>
-                </div>
-              </div>
-            </div>
-          </article>
-        `;
-      }).join("");
-
-      els.results.querySelectorAll("[data-open]").forEach((b) => {
-        b.onclick = () => {
-          const url = b.getAttribute("data-open");
-          if (!url) return;
-          if (tg?.openLink) tg.openLink(url);
-          else window.open(url, "_blank");
+      results.querySelectorAll(".track").forEach((el) => {
+        el.onclick = () => {
+          const idx = Number(el.getAttribute("data-i"));
+          sendTrack(playlist[idx]);
         };
       });
-
-      els.results.querySelectorAll("[data-i]").forEach((b) => {
-        b.onclick = () => {
-          const idx = Number(b.getAttribute("data-i"));
-          downloadTrack(visibleTracks[idx]);
-        };
-      });
-
-      updateActionButtons();
     }
 
-    function mergeTracks(existing, incoming) {
-      const map = new Map();
-      existing.forEach((t) => map.set(t.id || t.url, t));
-      incoming.forEach((t) => map.set(t.id || t.url, t));
-      return Array.from(map.values());
-    }
-
-    async function runSearch(query, artistMode = false, limitOverride = null, append = false) {
-      const q = query.trim();
-      if (!q) {
-        setError("Введите запрос.");
-        return;
-      }
-
-      const limit = limitOverride || (artistMode ? ARTIST_INITIAL_LIMIT : 30);
-      setLoading(true);
-      setError("");
-      setState(artistMode ? `Поиск артиста: ${q}` : `Ищу: ${q}`);
-
-      try {
-        const cacheKey = `${state.currentSource}|${q.toLowerCase()}|${artistMode ? 1 : 0}|${limit}`;
-        let incoming = null;
-        if (searchCache.has(cacheKey)) {
-          incoming = searchCache.get(cacheKey);
-        } else {
-          const res = await fetch(SEARCH_URL, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              query: q,
-              userId,
-              source: state.currentSource,
-              artistMode,
-              limit,
-              includeCovers: false
-            })
-          });
-
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          const payload = await res.json();
-          incoming = extractResults(payload).map(mapTrack);
-          if (incoming.length) {
-            searchCache.set(cacheKey, incoming);
-          }
-        }
-
-        if (!incoming.length) {
-          if (!append) {
-            state.tracks = [];
-            state.visibleCount = LIST_PAGE;
-            renderVisibleTracks();
-          }
-          setError("Ничего не найдено.");
-          if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
-          return;
-        }
-
-        state.currentQuery = q;
-        state.artistMode = artistMode;
-        state.sourceLimit = limit;
-        state.lastRequestReturned = incoming.length;
-        state.tracks = append ? mergeTracks(state.tracks, incoming) : incoming;
-        if (!append) state.visibleCount = LIST_PAGE;
-
-        renderVisibleTracks();
-        setState(`Найдено: ${state.tracks.length}. Показано: ${Math.min(state.visibleCount, state.tracks.length)}.`);
-        if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
-      } catch (e) {
-        console.error(e);
-        setError("Ошибка запроса к API.");
-        if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    async function downloadTrack(track) {
+    async function sendTrack(track) {
       if (!track?.url) {
-        toast("Нет ссылки на трек", false);
+        showNotification("Нет ссылки на трек");
+        return;
+      }
+      if (!tg || userId === "demo") {
+        showNotification("Откройте TMA внутри Telegram");
         return;
       }
 
-      toast("Отправляю MP3 в чат...", true);
-
       try {
-        const res = await fetch(DOWNLOAD_URL, {
+        const response = await fetch(DOWNLOAD_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -556,104 +460,130 @@
             artist: track.artist,
             trackUrl: track.url,
             url: track.url,
-            source: track.source || state.currentSource,
+            source: "soundcloud",
             cover_url: track.cover
           })
         });
 
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        toast("MP3 отправлен", true);
-      } catch (e) {
-        console.error(e);
-        toast("Не удалось отправить MP3", false);
+        if (!response.ok) throw new Error("Send failed");
+        showNotification("MP3 отправлен в чат");
+        haptic("success");
+      } catch (error) {
+        console.error("Send error:", error);
+        showNotification("Не удалось отправить MP3");
+        haptic("error");
       }
     }
 
-    function renderPlaylists() {
-      els.playlists.innerHTML = playlists.map((p) => `
-        <article class="playlist" data-query="${esc(p.query)}">
-          <span class="tag">${esc(p.hint)}</span>
-          <b>${esc(p.name)}</b>
-          <p class="muted">${esc(p.query)}</p>
-        </article>
+    async function loadNewReleases() {
+      try {
+        const response = await fetch(`${NEW_RELEASES_URL}?limit=12&country=US`);
+        if (!response.ok) throw new Error("New releases failed");
+        const data = await response.json();
+        const albums = data.albums || [];
+        const tracks = data.tracks || [];
+        renderNewReleases(albums, tracks);
+      } catch (error) {
+        console.error("New releases error:", error);
+        newReleasesEl.innerHTML = "";
+      }
+    }
+
+    function renderNewReleases(albums, tracks) {
+      const items = [];
+      albums.forEach((a) => items.push({
+        type: "album",
+        title: a.album_name || "Альбом",
+        artist: a.artist || "Unknown Artist",
+        cover: a.cover_url || "",
+        url: a.url || "",
+        query: `${a.artist || ""} ${a.album_name || ""}`.trim()
+      }));
+      tracks.forEach((t) => items.push({
+        type: "track",
+        title: t.title || "Трек",
+        artist: t.artist || "Unknown Artist",
+        cover: t.cover_url || "",
+        url: t.url || "",
+        track: mapTrack(t)
+      }));
+
+      newReleasesEl.innerHTML = items.map((item, index) => `
+        <div class="release-card" data-i="${index}" data-type="${item.type}">
+          ${item.cover ?
+            `<img class="release-cover" src="${escapeHtml(item.cover)}" alt="">` :
+            `<div class="release-cover"></div>`
+          }
+          <div class="release-title">${escapeHtml(item.title)}</div>
+          <div class="release-sub">${escapeHtml(item.artist)}</div>
+          <div class="release-tag">${item.type === "album" ? "Альбом" : "Трек"}</div>
+        </div>
       `).join("");
 
-      els.playlists.querySelectorAll(".playlist").forEach((card) => {
-        card.onclick = () => {
-          const q = card.getAttribute("data-query") || "";
-          els.input.value = q;
-          runSearch(q, false);
+      newReleasesEl.querySelectorAll(".release-card").forEach((el) => {
+        el.onclick = () => {
+          const idx = Number(el.getAttribute("data-i"));
+          const item = items[idx];
+          if (!item) return;
+          if (item.type === "album") {
+            searchInput.value = item.query;
+            if (item.query) searchMusic(item.query);
+          } else if (item.type === "track") {
+            sendTrack(item.track);
+          }
         };
       });
     }
 
-    function initials(name) {
-      return (name || "A")
-        .split(" ")
-        .map((p) => p[0])
-        .join("")
-        .slice(0, 2)
-        .toUpperCase();
+    function showLoading() {
+      results.innerHTML = `
+        <div class="loading">
+          <div class="spinner"></div>
+          <div class="loading-text">Поиск треков...</div>
+        </div>
+      `;
     }
 
-    function renderArtists() {
-      els.artists.innerHTML = artists.map((a) => `
-        <article class="artist" data-artist="${esc(a.name)}">
-          <div class="avatar">${esc(initials(a.name))}</div>
-          <div>
-            <b>${esc(a.name)}</b>
-            <span>${esc(a.genre)}</span>
-          </div>
-        </article>
-      `).join("");
-
-      els.artists.querySelectorAll(".artist").forEach((card) => {
-        card.onclick = () => {
-          const artist = card.getAttribute("data-artist") || "";
-          els.input.value = artist;
-          runSearch(artist, true, ARTIST_INITIAL_LIMIT, false);
-        };
-      });
+    function showEmpty(text = "Введите название трека или исполнителя") {
+      results.innerHTML = `
+        <div class="empty">
+          <div class="empty-icon">🎵</div>
+          <div class="empty-title">Найдите свою музыку</div>
+          <div class="empty-text">${escapeHtml(text)}</div>
+        </div>
+      `;
     }
 
-    function setSource(source) {
-      state.currentSource = source === "spotify" ? "spotify" : "soundcloud";
-      document.querySelectorAll(".source-btn").forEach((btn) => {
-        btn.classList.toggle("active", btn.dataset.source === state.currentSource);
-      });
-      searchCache.clear();
-      setState(`Источник: ${state.currentSource}`);
+    function showError(text) {
+      results.innerHTML = `
+        <div class="empty">
+          <div class="empty-icon">😕</div>
+          <div class="empty-title">Что-то пошло не так</div>
+          <div class="empty-text">${escapeHtml(text)}</div>
+        </div>
+      `;
     }
 
-    els.btn.onclick = () => runSearch(els.input.value.trim(), true, ARTIST_INITIAL_LIMIT, false);
-    els.input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") runSearch(els.input.value.trim(), true, ARTIST_INITIAL_LIMIT, false);
-    });
-
-    els.showMoreBtn.onclick = () => {
-      state.visibleCount += LIST_PAGE;
-      renderVisibleTracks();
-      setState(`Найдено: ${state.tracks.length}. Показано: ${Math.min(state.visibleCount, state.tracks.length)}.`);
-    };
-
-    els.loadMoreSourceBtn.onclick = () => {
-      const nextLimit = Math.min(state.sourceLimit + ARTIST_STEP, ARTIST_MAX_LIMIT);
-      if (nextLimit <= state.sourceLimit) return;
-      runSearch(state.currentQuery, true, nextLimit, true);
-    };
-
-    document.getElementById("srcSoundcloud").onclick = () => setSource("soundcloud");
-    document.getElementById("srcSpotify").onclick = () => setSource("spotify");
-
-    renderPlaylists();
-    renderArtists();
-    setSource("soundcloud");
-
-    if (tg) {
-      tg.MainButton.text = "Открыть бота";
-      tg.MainButton.onClick(() => tg.openTelegramLink("https://t.me/YOUR_BOT_USERNAME"));
-      tg.MainButton.show();
+    function showNotification(text) {
+      if (tg?.showAlert) tg.showAlert(text);
+      else alert(text);
     }
+
+    function haptic(type) {
+      if (!tg?.HapticFeedback) return;
+      if (type === "success") tg.HapticFeedback.notificationOccurred("success");
+      else if (type === "error") tg.HapticFeedback.notificationOccurred("error");
+      else tg.HapticFeedback.impactOccurred("light");
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement("div");
+      div.textContent = String(text ?? "");
+      return div.innerHTML;
+    }
+
+    loadNewReleases();
+    setTimeout(() => searchInput.focus(), 300);
   </script>
 </body>
 </html>

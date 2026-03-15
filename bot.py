@@ -457,6 +457,55 @@ def search_spotify(query: str, limit: int = 20, include_meta: bool = False) -> l
     return [x for x in out if x.get("url")]
 
 
+def spotify_lookup_track(title: str, artist: str | None = None) -> dict | None:
+    token = get_spotify_token()
+    if not token:
+        return None
+
+    query = f"{artist or ''} {title or ''}".strip()
+    if not query:
+        return None
+
+    encoded_q = urllib.parse.quote(query)
+    url = f"https://api.spotify.com/v1/search?q={encoded_q}&type=track&limit=1"
+    payload = http_json_request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0",
+        },
+        proxy=SPOTIFY_PROXY or None,
+    )
+    if not payload:
+        return None
+
+    items = (((payload.get("tracks") or {}).get("items")) or [])
+    if not items:
+        return None
+
+    it = items[0]
+    artists = it.get("artists") or []
+    artist_name = ", ".join([a.get("name", "") for a in artists if a.get("name")]).strip() or "Unknown Artist"
+    images = (it.get("album") or {}).get("images") or []
+    cover = images[0].get("url") if images else None
+    external_ids = it.get("external_ids") or {}
+    album = it.get("album") or {}
+    return {
+        "spotify_id": it.get("id"),
+        "spotify_url": ((it.get("external_urls") or {}).get("spotify") or ""),
+        "artist": artist_name,
+        "cover_url": cover,
+        "album_name": album.get("name"),
+        "album_id": album.get("id"),
+        "release_date": album.get("release_date"),
+        "popularity": it.get("popularity"),
+        "explicit": it.get("explicit"),
+        "preview_url": it.get("preview_url"),
+        "isrc": external_ids.get("isrc"),
+    }
+
+
 def resolve_spotify_to_soundcloud(track_url: str, title: str | None = None, artist: str | None = None) -> str | None:
     query = f"{artist or ''} {title or ''}".strip()
     if not query and "open.spotify.com/track/" in (track_url or ""):
@@ -640,6 +689,27 @@ def search_music(
         if not videos:
             videos = search_soundcloud(query, target_limit, include_covers=include_covers)
         if videos:
+            if include_meta and is_spotify_configured():
+                enriched = []
+                for item in videos:
+                    meta = spotify_lookup_track(item.get("title", ""), item.get("artist"))
+                    if meta:
+                        item.update(
+                            {
+                                "spotify_id": meta.get("spotify_id"),
+                                "spotify_url": meta.get("spotify_url"),
+                                "album_name": meta.get("album_name"),
+                                "album_id": meta.get("album_id"),
+                                "release_date": meta.get("release_date"),
+                                "popularity": meta.get("popularity"),
+                                "explicit": meta.get("explicit"),
+                                "preview_url": meta.get("preview_url"),
+                                "isrc": meta.get("isrc"),
+                                "cover_url": meta.get("cover_url") or item.get("cover_url"),
+                            }
+                        )
+                    enriched.append(item)
+                videos = enriched
             set_search_cache(cache_key, videos)
             return videos, None
         return [], "SoundCloud не вернул результаты. Попробуйте другой запрос."
