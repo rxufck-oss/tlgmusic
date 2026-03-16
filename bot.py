@@ -305,6 +305,10 @@ def get_cached_new_releases(key: str) -> dict | None:
 
 
 def set_cached_new_releases(key: str, payload: dict) -> None:
+    albums = payload.get("albums") or []
+    tracks = payload.get("tracks") or []
+    if not albums and not tracks:
+        return
     NEW_RELEASES_CACHE[key] = {"payload": payload, "created_at": time.time()}
 
 
@@ -363,6 +367,17 @@ def get_spotify_new_releases(limit: int = 12, country: str = "US") -> dict:
             albums_raw = (((year_search or {}).get("albums") or {}).get("items")) or []
             if albums_raw:
                 break
+    if not albums_raw:
+        album_fallback = http_json_request(
+            f"https://api.spotify.com/v1/search?q=new%20music&type=album&limit={safe_limit}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0",
+            },
+            proxy=SPOTIFY_PROXY or None,
+        )
+        albums_raw = (((album_fallback or {}).get("albums") or {}).get("items")) or []
     albums = []
     tracks = []
     for album in albums_raw:
@@ -409,6 +424,17 @@ def get_spotify_new_releases(limit: int = 12, country: str = "US") -> dict:
             items = (((track_year or {}).get("tracks") or {}).get("items")) or []
             if items:
                 break
+    if not items:
+        track_fallback = http_json_request(
+            f"https://api.spotify.com/v1/search?q=new%20music&type=track&limit={safe_limit}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0",
+            },
+            proxy=SPOTIFY_PROXY or None,
+        )
+        items = (((track_fallback or {}).get("tracks") or {}).get("items")) or []
     for it in items:
         artists = it.get("artists") or []
         artist = ", ".join([a.get("name", "") for a in artists if a.get("name")]).strip() or "Unknown Artist"
