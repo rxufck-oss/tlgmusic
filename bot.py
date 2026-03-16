@@ -66,6 +66,7 @@ TRENDING_ARTISTS = [
     ).split(",")
     if a.strip()
 ]
+SC_NEW_RELEASES_LIMIT = int(os.getenv("SC_NEW_RELEASES_LIMIT", "30"))
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
 SPOTIFY_PROXY = os.getenv("SPOTIFY_PROXY", "").strip()
@@ -748,6 +749,45 @@ def search_soundcloud_api(query: str, limit: int, include_covers: bool = True) -
     return [r for r in results if r.get("url")]
 
 
+def get_soundcloud_new_releases(limit: int = 20) -> list:
+    if not is_soundcloud_api_configured():
+        return []
+
+    safe_limit = max(1, min(limit, 50))
+    url = (
+        "https://api-v2.soundcloud.com/charts"
+        f"?kind=top&genre=soundcloud%3Agenres%3Aall-music&limit={safe_limit}"
+        f"&client_id={urllib.parse.quote(SC_CLIENT_ID)}"
+    )
+    payload = http_json_request(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=SC_API_TIMEOUT_SEC)
+    items = (payload or {}).get("collection") or []
+    tracks = []
+    for item in items:
+        track = item.get("track") or {}
+        if not track:
+            continue
+        title = track.get("title") or "Без названия"
+        user = track.get("user") or {}
+        artist = user.get("username") or "Unknown Artist"
+        cover = normalize_sc_cover(track.get("artwork_url")) or normalize_sc_cover(user.get("avatar_url"))
+        duration_ms = int(track.get("duration") or 0)
+        mins = duration_ms // 60000
+        secs = (duration_ms % 60000) // 1000
+        tracks.append(
+            {
+                "type": "track",
+                "id": track.get("id"),
+                "title": title,
+                "artist": artist,
+                "duration": f"{mins}:{secs:02d}" if duration_ms else "?:??",
+                "url": track.get("permalink_url") or "",
+                "cover_url": cover,
+                "source": "soundcloud",
+            }
+        )
+    return [t for t in tracks if t.get("url")]
+
+
 def search_music(
     query: str,
     limit: int | None = None,
@@ -1133,8 +1173,8 @@ def start_http_api() -> None:
 
     @app.get("/api/new-releases")
     def api_new_releases():
-        if not is_spotify_configured():
-            return jsonify({"ok": False, "error": "Spotify не настроен", "albums": [], "tracks": []}), 400
+        if not (is_spotify_configured() or is_soundcloud_api_configured()):
+            return jsonify({"ok": False, "error": "Нет доступных источников", "albums": [], "tracks": []}), 400
 
         raw_limit = request.args.get("limit")
         raw_country = request.args.get("country")
@@ -1143,6 +1183,30 @@ def start_http_api() -> None:
         except (TypeError, ValueError):
             requested_limit = 12
         country = str(raw_country or "US").strip()[:2]
+        sc_tracks = get_soundcloud_new_releases(min(SC_NEW_RELEASES_LIMIT, requested_limit * 2))
+        if sc_tracks:
+            enriched = []
+            for idx, item in enumerate(sc_tracks[:requested_limit]):
+                meta = spotify_lookup_track(item.get("title", ""), item.get("artist"))
+                if meta:
+                    item.update(
+                        {
+                            "spotify_id": meta.get("spotify_id"),
+                            "spotify_url": meta.get("spotify_url"),
+                            "album_name": meta.get("album_name"),
+                            "album_id": meta.get("album_id"),
+                            "release_date": meta.get("release_date"),
+                            "popularity": meta.get("popularity"),
+                            "explicit": meta.get("explicit"),
+                            "preview_url": meta.get("preview_url"),
+                            "isrc": meta.get("isrc"),
+                            "cover_url": meta.get("cover_url") or item.get("cover_url"),
+                            "source": "soundcloud",
+                        }
+                    )
+                enriched.append(item)
+            return jsonify({"ok": True, "albums": [], "tracks": enriched})
+
         payload = get_spotify_new_releases(requested_limit, country)
         return jsonify({"ok": True, "albums": payload.get("albums", []), "tracks": payload.get("tracks", [])})
 
