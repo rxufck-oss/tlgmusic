@@ -87,6 +87,22 @@
       gap: 12px;
       padding: 0 16px 12px;
     }
+    .recent-searches {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 0 16px 12px;
+    }
+    .recent-pill {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      color: var(--text-primary);
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-size: 13px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
 
     .release-card {
       background: var(--bg-secondary);
@@ -235,6 +251,10 @@
       color: var(--text-secondary);
       font-weight: 500;
     }
+    .muted {
+      color: var(--text-secondary);
+      font-size: 13px;
+    }
 
     .track-play-icon {
       width: 36px;
@@ -341,6 +361,9 @@
     </div>
   </div>
 
+  <div class="section-title">Недавние поиски</div>
+  <div class="recent-searches" id="recentSearches"></div>
+
   <div class="section-title">Новинки SoundCloud</div>
   <div class="new-releases" id="newReleases"></div>
 
@@ -372,6 +395,7 @@
     const searchInput = document.getElementById("searchInput");
     const results = document.getElementById("results");
     const newReleasesEl = document.getElementById("newReleases");
+    const recentSearchesEl = document.getElementById("recentSearches");
 
     let playlist = [];
     let searchTimeout = null;
@@ -427,6 +451,8 @@
         const incoming = (data.results || []).map(mapTrack);
         if (!append) {
           playlist = incoming;
+          saveRecentSearch(query);
+          renderRecentSearches();
         } else {
           playlist = playlist.concat(incoming);
         }
@@ -484,6 +510,44 @@
         el.onclick = () => {
           const idx = Number(el.getAttribute("data-i"));
           sendTrack(playlist[idx]);
+        };
+      });
+    }
+
+    function loadRecentSearches() {
+      try {
+        const raw = localStorage.getItem("tlg_recent_searches");
+        const parsed = raw ? JSON.parse(raw) : [];
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+
+    function saveRecentSearch(query) {
+      const q = query.trim();
+      if (!q) return;
+      const list = loadRecentSearches().filter((x) => x.toLowerCase() !== q.toLowerCase());
+      list.unshift(q);
+      const trimmed = list.slice(0, 8);
+      localStorage.setItem("tlg_recent_searches", JSON.stringify(trimmed));
+    }
+
+    function renderRecentSearches() {
+      const list = loadRecentSearches();
+      if (!list.length) {
+        recentSearchesEl.innerHTML = `<div class="muted">Нет истории</div>`;
+        return;
+      }
+      recentSearchesEl.innerHTML = list.map((q) => `
+        <button class="recent-pill" data-q="${escapeHtml(q)}">${escapeHtml(q)}</button>
+      `).join("");
+      recentSearchesEl.querySelectorAll(".recent-pill").forEach((btn) => {
+        btn.onclick = () => {
+          const q = btn.getAttribute("data-q") || "";
+          if (!q) return;
+          searchInput.value = q;
+          searchMusic(q, false);
         };
       });
     }
@@ -652,6 +716,7 @@
     }
 
     loadNewReleases();
+    renderRecentSearches();
     setTimeout(() => searchInput.focus(), 300);
 
     loadMoreBtn.onclick = () => {
