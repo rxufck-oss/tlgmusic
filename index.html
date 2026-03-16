@@ -424,6 +424,8 @@
       if (!append) {
         searchOffset = 0;
         showLoading();
+        saveRecentSearch(query);
+        renderRecentSearches();
       }
 
       try {
@@ -451,8 +453,6 @@
         const incoming = (data.results || []).map(mapTrack);
         if (!append) {
           playlist = incoming;
-          saveRecentSearch(query);
-          renderRecentSearches();
         } else {
           playlist = playlist.concat(incoming);
         }
@@ -534,6 +534,7 @@
     }
 
     function renderRecentSearches() {
+      if (!recentSearchesEl) return;
       const list = loadRecentSearches();
       if (!list.length) {
         recentSearchesEl.innerHTML = `<div class="muted">Нет истории</div>`;
