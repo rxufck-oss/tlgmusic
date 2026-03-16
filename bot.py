@@ -57,6 +57,15 @@ SEARCH_CACHE_MAX_ITEMS = int(os.getenv("SEARCH_CACHE_MAX_ITEMS", "200"))
 NEW_RELEASES_CACHE_TTL = int(os.getenv("NEW_RELEASES_CACHE_TTL", "600"))
 WEBAPP_STATIC_DIR = os.getenv("WEBAPP_STATIC_DIR", "").strip()
 SPOTIFY_META_LIMIT = int(os.getenv("SPOTIFY_META_LIMIT", "10"))
+TRENDING_ARTISTS = [
+    a.strip()
+    for a in os.getenv(
+        "TRENDING_ARTISTS",
+        "Travis Scott,The Weeknd,Drake,Taylor Swift,Billie Eilish,"
+        "Post Malone,Dua Lipa,Ed Sheeran,Doja Cat,Bad Bunny",
+    ).split(",")
+    if a.strip()
+]
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
 SPOTIFY_PROXY = os.getenv("SPOTIFY_PROXY", "").strip()
@@ -435,6 +444,32 @@ def get_spotify_new_releases(limit: int = 12, country: str = "US") -> dict:
             proxy=SPOTIFY_PROXY or None,
         )
         items = (((track_fallback or {}).get("tracks") or {}).get("items")) or []
+
+    if not albums_raw and not items:
+        trending_tracks = []
+        for artist in TRENDING_ARTISTS:
+            artist_query = f"artist:{artist}"
+            results = search_spotify(artist_query, limit=1, include_meta=True, offset=0)
+            if results:
+                trending_tracks.extend(results)
+            if len(trending_tracks) >= safe_limit:
+                break
+        items = [
+            {
+                "id": t.get("spotify_id") or t.get("id"),
+                "name": t.get("title"),
+                "artists": [{"name": t.get("artist")}],
+                "duration_ms": None,
+                "external_urls": {"spotify": t.get("spotify_url") or t.get("url")},
+                "album": {
+                    "name": t.get("album_name"),
+                    "id": t.get("album_id"),
+                    "release_date": t.get("release_date"),
+                    "images": [{"url": t.get("cover_url")}],
+                },
+            }
+            for t in trending_tracks
+        ]
     for it in items:
         artists = it.get("artists") or []
         artist = ", ".join([a.get("name", "") for a in artists if a.get("name")]).strip() or "Unknown Artist"
