@@ -785,7 +785,27 @@ def get_soundcloud_new_releases(limit: int = 20) -> list:
                 "source": "soundcloud",
             }
         )
-    return [t for t in tracks if t.get("url")]
+
+    if tracks:
+        return [t for t in tracks if t.get("url")]
+
+    # Fallback: use search API if charts are unavailable.
+    fallback = search_soundcloud_api("new", safe_limit, include_covers=True)
+    results = []
+    for it in fallback:
+        results.append(
+            {
+                "type": "track",
+                "id": it.get("id"),
+                "title": it.get("title"),
+                "artist": it.get("artist"),
+                "duration": it.get("duration"),
+                "url": it.get("url"),
+                "cover_url": it.get("cover_url"),
+                "source": "soundcloud",
+            }
+        )
+    return [t for t in results if t.get("url")]
 
 
 def search_music(
