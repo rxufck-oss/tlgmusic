@@ -334,7 +334,7 @@ def get_spotify_new_releases(limit: int = 12, country: str = "US") -> dict:
         proxy=SPOTIFY_PROXY or None,
     )
     if not payload:
-        return {"albums": [], "tracks": []}
+        payload = {"albums": {"items": []}}
 
     albums_raw = ((payload.get("albums") or {}).get("items")) or []
     if not albums_raw:
