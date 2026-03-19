@@ -57,6 +57,7 @@ SEARCH_CACHE_MAX_ITEMS = int(os.getenv("SEARCH_CACHE_MAX_ITEMS", "200"))
 NEW_RELEASES_CACHE_TTL = int(os.getenv("NEW_RELEASES_CACHE_TTL", "600"))
 WEBAPP_STATIC_DIR = os.getenv("WEBAPP_STATIC_DIR", "").strip()
 SPOTIFY_META_LIMIT = int(os.getenv("SPOTIFY_META_LIMIT", "10"))
+SPOTIFY_ARTIST_ALBUM_LIMIT = int(os.getenv("SPOTIFY_ARTIST_ALBUM_LIMIT", "25"))
 TRENDING_ARTISTS = [
     a.strip()
     for a in os.getenv(
@@ -73,6 +74,7 @@ SPOTIFY_PROXY = os.getenv("SPOTIFY_PROXY", "").strip()
 SC_CLIENT_ID = os.getenv("SC_CLIENT_ID", "").strip()
 SC_API_TIMEOUT_SEC = int(os.getenv("SC_API_TIMEOUT_SEC", "12"))
 MAX_TRACK_DURATION_SEC = int(os.getenv("MAX_TRACK_DURATION_SEC", "0"))
+MIN_TRACK_DURATION_SEC = int(os.getenv("MIN_TRACK_DURATION_SEC", "0"))
 YTDLP_AUDIO_BITRATE = int(os.getenv("YTDLP_AUDIO_BITRATE", "64"))
 YTDLP_FORMAT = os.getenv("YTDLP_FORMAT", "bestaudio[abr<=96]/bestaudio").strip()
 YTDLP_CONCURRENT_FRAGMENTS = int(os.getenv("YTDLP_CONCURRENT_FRAGMENTS", "8"))
@@ -560,6 +562,106 @@ def search_spotify(query: str, limit: int = 20, include_meta: bool = False, offs
     return [x for x in out if x.get("url")]
 
 
+def search_spotify_artist(query: str) -> dict | None:
+    token = get_spotify_token()
+    if not token or not query:
+        return None
+    encoded_q = urllib.parse.quote(query)
+    url = f"https://api.spotify.com/v1/search?q={encoded_q}&type=artist&limit=1"
+    payload = http_json_request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0",
+        },
+        proxy=SPOTIFY_PROXY or None,
+    )
+    items = (((payload or {}).get("artists") or {}).get("items")) or []
+    if not items:
+        return None
+    artist = items[0]
+    images = artist.get("images") or []
+    return {
+        "id": artist.get("id"),
+        "name": artist.get("name"),
+        "image": images[0].get("url") if images else None,
+        "followers": (artist.get("followers") or {}).get("total"),
+        "genres": artist.get("genres") or [],
+        "url": ((artist.get("external_urls") or {}).get("spotify") or ""),
+    }
+
+
+def get_spotify_artist_albums(artist_id: str, limit: int = 20) -> list:
+    token = get_spotify_token()
+    if not token or not artist_id:
+        return []
+    safe_limit = max(1, min(limit, 50))
+    url = (
+        f"https://api.spotify.com/v1/artists/{artist_id}/albums"
+        f"?include_groups=album,single&limit={safe_limit}"
+    )
+    payload = http_json_request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0",
+        },
+        proxy=SPOTIFY_PROXY or None,
+    )
+    items = (payload or {}).get("items") or []
+    albums = []
+    for it in items:
+        images = it.get("images") or []
+        albums.append(
+            {
+                "id": it.get("id"),
+                "name": it.get("name"),
+                "release_date": it.get("release_date"),
+                "total_tracks": it.get("total_tracks"),
+                "cover_url": images[0].get("url") if images else None,
+                "url": ((it.get("external_urls") or {}).get("spotify") or ""),
+            }
+        )
+    return albums
+
+
+def get_spotify_album_tracks(album_id: str) -> list:
+    token = get_spotify_token()
+    if not token or not album_id:
+        return []
+    url = f"https://api.spotify.com/v1/albums/{album_id}/tracks?limit=50"
+    payload = http_json_request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0",
+        },
+        proxy=SPOTIFY_PROXY or None,
+    )
+    items = (payload or {}).get("items") or []
+    tracks = []
+    for it in items:
+        artists = it.get("artists") or []
+        artist = ", ".join([a.get("name", "") for a in artists if a.get("name")]).strip() or "Unknown Artist"
+        duration_ms = int(it.get("duration_ms") or 0)
+        mins = duration_ms // 60000
+        secs = (duration_ms % 60000) // 1000
+        tracks.append(
+            {
+                "id": it.get("id"),
+                "title": it.get("name", "Без названия"),
+                "artist": artist,
+                "duration": f"{mins}:{secs:02d}" if duration_ms else "?:??",
+                "url": ((it.get("external_urls") or {}).get("spotify") or ""),
+                "source": "spotify",
+            }
+        )
+    return tracks
+
+
 def spotify_lookup_track(title: str, artist: str | None = None) -> dict | None:
     token = get_spotify_token()
     if not token:
@@ -655,6 +757,9 @@ def parse_search_results(stdout: str, include_covers: bool = True) -> list:
         try:
             data = json.loads(line)
             duration_sec = data.get("duration")
+            if MIN_TRACK_DURATION_SEC and isinstance(duration_sec, (int, float)):
+                if duration_sec < MIN_TRACK_DURATION_SEC:
+                    continue
             if MAX_TRACK_DURATION_SEC and isinstance(duration_sec, (int, float)):
                 if duration_sec > MAX_TRACK_DURATION_SEC:
                     continue
@@ -729,6 +834,9 @@ def search_soundcloud_api(query: str, limit: int, include_covers: bool = True) -
     for it in items:
         artist = (it.get("user") or {}).get("username")
         duration_ms = int(it.get("duration") or 0)
+        if MIN_TRACK_DURATION_SEC and duration_ms:
+            if duration_ms < MIN_TRACK_DURATION_SEC * 1000:
+                continue
         if MAX_TRACK_DURATION_SEC and duration_ms:
             if duration_ms > MAX_TRACK_DURATION_SEC * 1000:
                 continue
@@ -1190,6 +1298,23 @@ def start_http_api() -> None:
             requested_offset,
         )
         return jsonify({"ok": len(videos) > 0, "error": error, "results": videos})
+
+    @app.get("/api/artist")
+    def api_artist():
+        if not is_spotify_configured():
+            return jsonify({"ok": False, "error": "Spotify не настроен"}), 400
+        query = str(request.args.get("query") or "").strip()
+        if not query:
+            return jsonify({"ok": False, "error": "query is required"}), 400
+        artist = search_spotify_artist(query)
+        if not artist:
+            return jsonify({"ok": False, "error": "artist not found"}), 404
+        albums = get_spotify_artist_albums(artist["id"], SPOTIFY_ARTIST_ALBUM_LIMIT)
+        albums_with_tracks = []
+        for album in albums:
+            tracks = get_spotify_album_tracks(album["id"])
+            albums_with_tracks.append({**album, "tracks": tracks})
+        return jsonify({"ok": True, "artist": artist, "albums": albums_with_tracks})
 
     @app.get("/api/new-releases")
     def api_new_releases():

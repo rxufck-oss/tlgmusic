@@ -97,6 +97,33 @@
       cursor: pointer;
       white-space: nowrap;
     }
+    .artist-card {
+      margin: 0 16px 12px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 12px;
+      display: none;
+      align-items: center;
+      gap: 12px;
+      cursor: pointer;
+    }
+    .artist-card img {
+      width: 64px;
+      height: 64px;
+      border-radius: 12px;
+      object-fit: cover;
+      background: linear-gradient(135deg, var(--accent) 0%, #764ba2 100%);
+    }
+    .artist-card .artist-name {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .artist-card .artist-meta {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
 
     .artist-group {
       margin-bottom: 14px;
@@ -106,6 +133,56 @@
       font-weight: 600;
       padding: 6px 0 8px;
       color: var(--text-primary);
+    }
+    .artist-modal {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.6);
+      display: none;
+      z-index: 300;
+    }
+    .artist-modal .panel {
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      margin: 40px 16px;
+      max-height: calc(100vh - 80px);
+      overflow: auto;
+      padding: 16px;
+    }
+    .artist-modal .close-btn {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      color: var(--text-primary);
+      border-radius: 10px;
+      padding: 8px 12px;
+      font-size: 12px;
+      cursor: pointer;
+      float: right;
+    }
+    .album-block {
+      margin-top: 16px;
+    }
+    .album-title {
+      font-size: 14px;
+      font-weight: 600;
+      margin: 6px 0 8px;
+    }
+    .album-cover {
+      width: 64px;
+      height: 64px;
+      border-radius: 12px;
+      object-fit: cover;
+      margin-right: 10px;
+    }
+    .album-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .album-meta {
+      font-size: 12px;
+      color: var(--text-secondary);
     }
 
     .results {
@@ -314,6 +391,7 @@
 
   <div class="section-title">Недавние поиски</div>
   <div class="recent-searches" id="recentSearches"></div>
+  <div class="artist-card" id="artistCard"></div>
 
   <div class="results" id="results">
     <div class="empty">
@@ -324,6 +402,12 @@
   </div>
   <div class="load-more-wrap" id="loadMoreWrap">
     <button class="load-more-btn" id="loadMoreBtn">Загрузить еще</button>
+  </div>
+  <div class="artist-modal" id="artistModal">
+    <div class="panel">
+      <button class="close-btn" id="artistCloseBtn">Закрыть</button>
+      <div id="artistModalBody"></div>
+    </div>
   </div>
 
   <script>
@@ -336,18 +420,24 @@
     const API_BASE = window.location.origin;
     const SEARCH_URL = `${API_BASE}/api/search`;
     const DOWNLOAD_URL = `${API_BASE}/api/download`;
+    const ARTIST_URL = `${API_BASE}/api/artist`;
 
     const userId = tg?.initDataUnsafe?.user?.id || "demo";
 
     const searchInput = document.getElementById("searchInput");
     const results = document.getElementById("results");
     const recentSearchesEl = document.getElementById("recentSearches");
+    const artistCardEl = document.getElementById("artistCard");
+    const artistModalEl = document.getElementById("artistModal");
+    const artistModalBody = document.getElementById("artistModalBody");
+    const artistCloseBtn = document.getElementById("artistCloseBtn");
 
     let playlist = [];
     let lastQuery = "";
     let searchAbort = null;
     let searchOffset = 0;
     const PAGE_SIZE = 50;
+    let artistModalTracks = [];
 
     const loadMoreWrap = document.getElementById("loadMoreWrap");
     const loadMoreBtn = document.getElementById("loadMoreBtn");
@@ -361,6 +451,7 @@
       }
       if (query.toLowerCase() === lastQuery) return;
       searchMusic(query, false);
+      loadArtistCard(query);
     });
 
     async function searchMusic(query, append) {
@@ -485,6 +576,98 @@
         map[artist].push(t);
       });
       return map;
+    }
+
+    async function loadArtistCard(query) {
+      if (!artistCardEl) return;
+      artistCardEl.style.display = "none";
+      try {
+        const res = await fetch(`${ARTIST_URL}?query=${encodeURIComponent(query)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data.ok || !data.artist) return;
+        renderArtistCard(data.artist, data.albums || []);
+      } catch (e) {
+        console.error("Artist card error:", e);
+      }
+    }
+
+    function renderArtistCard(artist, albums) {
+      if (!artistCardEl) return;
+      const genres = (artist.genres || []).slice(0, 2).join(", ");
+      const followers = artist.followers ? `${artist.followers.toLocaleString()} слушателей` : "";
+      artistCardEl.innerHTML = `
+        ${artist.image ? `<img src="${escapeHtml(artist.image)}" alt="">` : `<div class="track-thumbnail placeholder">🎵</div>`}
+        <div>
+          <div class="artist-name">${escapeHtml(artist.name || "Артист")}</div>
+          <div class="artist-meta">${escapeHtml([genres, followers].filter(Boolean).join(" • "))}</div>
+        </div>
+      `;
+      artistCardEl.style.display = "flex";
+      artistCardEl.onclick = () => openArtistModal(artist, albums);
+    }
+
+    function openArtistModal(artist, albums) {
+      if (!artistModalEl) return;
+      const header = `
+        <div class="album-header">
+          ${artist.image ? `<img class="album-cover" src="${escapeHtml(artist.image)}" alt="">` : `<div class="album-cover"></div>`}
+          <div>
+            <div class="artist-title">${escapeHtml(artist.name || "Артист")}</div>
+            <div class="album-meta">${escapeHtml((artist.genres || []).slice(0, 3).join(", "))}</div>
+          </div>
+        </div>
+      `;
+      artistModalTracks = [];
+      const body = albums.map((album) => {
+        const tracks = (album.tracks || []).map((t) => {
+          const trackObj = {
+            id: t.id || t.url || "",
+            title: t.title,
+            artist: t.artist,
+            duration: t.duration,
+            url: t.url,
+            cover: album.cover_url,
+            source: "spotify"
+          };
+          const idx = artistModalTracks.push(trackObj) - 1;
+          return `
+            <div class="track" data-i="${idx}">
+              <div class="track-info">
+                <div class="track-title">${escapeHtml(t.title)}</div>
+                <div class="track-duration">${escapeHtml(t.duration)}</div>
+              </div>
+              <div class="track-play-icon">▶️</div>
+            </div>
+          `;
+        }).join("");
+        return `
+          <div class="album-block">
+            <div class="album-header">
+              ${album.cover_url ? `<img class="album-cover" src="${escapeHtml(album.cover_url)}" alt="">` : `<div class="album-cover"></div>`}
+              <div>
+                <div class="album-title">${escapeHtml(album.name || "Альбом")}</div>
+                <div class="album-meta">${escapeHtml(album.release_date || "")}</div>
+              </div>
+            </div>
+            ${tracks}
+          </div>
+        `;
+      }).join("");
+      artistModalBody.innerHTML = header + body;
+      artistModalEl.style.display = "block";
+      artistModalBody.querySelectorAll(".track").forEach((el) => {
+        el.onclick = () => {
+          const idx = Number(el.getAttribute("data-i"));
+          if (idx >= 0) sendTrack(artistModalTracks[idx]);
+        };
+      });
+    }
+
+    if (artistCloseBtn) {
+      artistCloseBtn.onclick = () => {
+        artistModalEl.style.display = "none";
+      };
     }
 
     function loadRecentSearches() {
