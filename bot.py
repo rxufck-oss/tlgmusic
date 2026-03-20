@@ -58,7 +58,7 @@ SEARCH_CACHE_MAX_ITEMS = int(os.getenv("SEARCH_CACHE_MAX_ITEMS", "200"))
 NEW_RELEASES_CACHE_TTL = int(os.getenv("NEW_RELEASES_CACHE_TTL", "600"))
 WEBAPP_STATIC_DIR = os.getenv("WEBAPP_STATIC_DIR", "").strip()
 SPOTIFY_META_LIMIT = int(os.getenv("SPOTIFY_META_LIMIT", "10"))
-SPOTIFY_ARTIST_ALBUM_LIMIT = int(os.getenv("SPOTIFY_ARTIST_ALBUM_LIMIT", "25"))
+SPOTIFY_ARTIST_ALBUM_LIMIT = int(os.getenv("SPOTIFY_ARTIST_ALBUM_LIMIT", "12"))
 SPOTIFY_ARTIST_TRACK_LIMIT = int(os.getenv("SPOTIFY_ARTIST_TRACK_LIMIT", "200"))
 SPOTIFY_ARTIST_EXPAND_ALBUMS = os.getenv("SPOTIFY_ARTIST_EXPAND_ALBUMS", "1").strip() == "1"
 TRENDING_ARTISTS = [
@@ -774,16 +774,29 @@ def get_spotify_album_tracks(album_id: str) -> list:
     return tracks
 
 
-def build_artist_catalog_from_artist(artist_id: str) -> list:
+def build_artist_catalog_from_artist(artist_id: str, fallback_albums: list | None = None) -> list:
     if not artist_id:
         return []
     albums = get_spotify_artist_albums(artist_id, limit=SPOTIFY_ARTIST_ALBUM_LIMIT)
+    fallback_map = {}
+    if fallback_albums:
+        for album in fallback_albums:
+            key = album.get("id") or album.get("name") or "singles"
+            fallback_map[key] = album
     if not albums:
-        return []
+        return fallback_albums or []
     out = []
     for album in albums:
         album_id = album.get("id")
         tracks = get_spotify_album_tracks(album_id) if album_id else []
+        if not tracks:
+            fb = None
+            if album_id and album_id in fallback_map:
+                fb = fallback_map.get(album_id)
+            elif album.get("name") and album.get("name") in fallback_map:
+                fb = fallback_map.get(album.get("name"))
+            if fb and fb.get("tracks"):
+                tracks = fb.get("tracks") or []
         if not tracks:
             continue
         out.append(
@@ -795,7 +808,7 @@ def build_artist_catalog_from_artist(artist_id: str) -> list:
                 "tracks": tracks,
             }
         )
-    return out
+    return out or (fallback_albums or [])
 
 
 def build_artist_catalog_from_search(query: str, limit: int = 50) -> list:
@@ -1519,12 +1532,13 @@ def start_http_api() -> None:
             return jsonify(cached_payload)
         if time.time() < SPOTIFY_RATE_LIMITED_UNTIL:
             return jsonify({"ok": False, "error": "spotify rate limited"}), 429
+        fallback_albums = build_artist_catalog_from_search(query, limit=50)
         artist = search_spotify_artist(query)
         albums_with_tracks = []
         if artist and artist.get("id"):
-            albums_with_tracks = build_artist_catalog_from_artist(artist.get("id"))
+            albums_with_tracks = build_artist_catalog_from_artist(artist.get("id"), fallback_albums)
         if not albums_with_tracks:
-            albums_with_tracks = build_artist_catalog_from_search(query, limit=50)
+            albums_with_tracks = fallback_albums
         if not artist and albums_with_tracks:
             artist = {
                 "id": None,
