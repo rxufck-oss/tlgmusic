@@ -58,6 +58,7 @@ NEW_RELEASES_CACHE_TTL = int(os.getenv("NEW_RELEASES_CACHE_TTL", "600"))
 WEBAPP_STATIC_DIR = os.getenv("WEBAPP_STATIC_DIR", "").strip()
 SPOTIFY_META_LIMIT = int(os.getenv("SPOTIFY_META_LIMIT", "10"))
 SPOTIFY_ARTIST_ALBUM_LIMIT = int(os.getenv("SPOTIFY_ARTIST_ALBUM_LIMIT", "25"))
+SPOTIFY_ARTIST_TRACK_LIMIT = int(os.getenv("SPOTIFY_ARTIST_TRACK_LIMIT", "200"))
 TRENDING_ARTISTS = [
     a.strip()
     for a in os.getenv(
@@ -665,15 +666,25 @@ def get_spotify_album_tracks(album_id: str) -> list:
 def build_artist_catalog_from_search(query: str, limit: int = 50) -> list:
     if not query:
         return []
-    results, _ = search_music(
-        query=query,
-        limit=limit,
-        artist_mode=False,
-        include_covers=True,
-        source="spotify",
-        include_meta=True,
-        offset=0,
-    )
+    max_limit = max(20, min(limit, SPOTIFY_ARTIST_TRACK_LIMIT))
+    results = []
+    offset = 0
+    while offset < max_limit:
+        batch, _ = search_music(
+            query=query,
+            limit=min(50, max_limit - offset),
+            artist_mode=False,
+            include_covers=True,
+            source="spotify",
+            include_meta=True,
+            offset=offset,
+        )
+        if not batch:
+            break
+        results.extend(batch)
+        if len(batch) < 50:
+            break
+        offset += 50
     if not results:
         return []
     albums_map = {}
@@ -703,7 +714,18 @@ def build_artist_catalog_from_search(query: str, limit: int = 50) -> list:
                 "source": "spotify",
             }
         )
-    return list(albums_map.values())
+    albums = list(albums_map.values())
+    for album in albums:
+        seen = set()
+        deduped = []
+        for t in album["tracks"]:
+            key = f"{(t.get('title') or '').lower()}|{(t.get('artist') or '').lower()}"
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(t)
+        album["tracks"] = deduped
+    return albums
 
 
 def spotify_lookup_track(title: str, artist: str | None = None) -> dict | None:
