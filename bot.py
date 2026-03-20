@@ -923,9 +923,9 @@ def build_artist_catalog_from_search(query: str, limit: int = 50) -> list:
                 continue
             full_tracks = get_spotify_album_tracks(album_id)
             if full_tracks:
-            album["tracks"] = [
-                {k: v for k, v in t.items() if k != "artist_ids"} for t in full_tracks
-            ]
+                album["tracks"] = [
+                    {k: v for k, v in t.items() if k != "artist_ids"} for t in full_tracks
+                ]
     return albums
 
 
