@@ -868,9 +868,7 @@ def build_artist_catalog_from_search(query: str, limit: int = 50) -> list:
             break
         offset += 50
     if not results:
-        results = search_soundcloud(query, max_limit, include_covers=False)
-        if not results:
-            return []
+        return []
     albums_map = {}
     ql = normalize_artist_name(query)
     for track in results:
@@ -1578,22 +1576,10 @@ def start_http_api() -> None:
             return jsonify(cached_payload)
         if time.time() < SPOTIFY_RATE_LIMITED_UNTIL:
             return jsonify({"ok": False, "error": "spotify rate limited"}), 429
-        fallback_albums = build_artist_catalog_from_search(query, limit=50)
         artist = search_spotify_artist(query)
-        albums_with_tracks = []
-        if artist and artist.get("id"):
-            albums_with_tracks = build_artist_catalog_from_artist(artist.get("id"), fallback_albums)
-        if not albums_with_tracks:
-            albums_with_tracks = fallback_albums
-        if not artist and albums_with_tracks:
-            artist = {
-                "id": None,
-                "name": query,
-                "image": None,
-                "followers": None,
-                "genres": [],
-                "url": "",
-            }
+        if not artist or not artist.get("id"):
+            return jsonify({"ok": False, "error": "artist not found"}), 404
+        albums_with_tracks = build_artist_catalog_from_artist(artist.get("id"))
         if time.time() < SPOTIFY_RATE_LIMITED_UNTIL and (not artist or not albums_with_tracks):
             return jsonify({"ok": False, "error": "spotify rate limited"}), 429
         if not artist:
