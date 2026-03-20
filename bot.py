@@ -95,6 +95,7 @@ SEARCH_CACHE: dict[str, dict] = {}
 SPOTIFY_TOKEN_CACHE: dict[str, float | str] = {"token": "", "expires_at": 0}
 SPOTIFY_ARTIST_CACHE: dict[str, dict] = {}
 SPOTIFY_ALBUM_TRACKS_CACHE: dict[str, dict] = {}
+SPOTIFY_RATE_LIMITED_UNTIL = 0.0
 NEW_RELEASES_CACHE: dict[str, dict] = {}
 DB_CONN = None
 HTTP_API_THREAD = None
@@ -255,6 +256,7 @@ def http_json_request(
     max_retries: int = 2,
 ) -> dict | None:
     attempt = 0
+    global SPOTIFY_RATE_LIMITED_UNTIL
     while True:
         try:
             req = urllib.request.Request(url, headers=headers or {}, method=method, data=data)
@@ -276,6 +278,7 @@ def http_json_request(
                 except (TypeError, ValueError):
                     retry_after = 0
                 delay = retry_after if retry_after > 0 else (2 ** attempt)
+                SPOTIFY_RATE_LIMITED_UNTIL = max(SPOTIFY_RATE_LIMITED_UNTIL, time.time() + delay)
                 logger.warning("HTTP 429 rate limit (%s), retrying in %ss", url, delay)
                 time.sleep(min(delay, 10))
                 attempt += 1
@@ -1488,6 +1491,8 @@ def start_http_api() -> None:
         cached_payload = get_cached_artist_payload(query)
         if cached_payload is not None:
             return jsonify(cached_payload)
+        if time.time() < SPOTIFY_RATE_LIMITED_UNTIL:
+            return jsonify({"ok": False, "error": "spotify rate limited"}), 429
         artist = search_spotify_artist(query)
         albums_with_tracks = []
         if artist and artist.get("id"):
@@ -1503,6 +1508,8 @@ def start_http_api() -> None:
                 "genres": [],
                 "url": "",
             }
+        if time.time() < SPOTIFY_RATE_LIMITED_UNTIL and (not artist or not albums_with_tracks):
+            return jsonify({"ok": False, "error": "spotify rate limited"}), 429
         if not artist:
             payload = {"ok": False, "error": "artist not found"}
             set_cached_artist_payload(query, payload)
