@@ -88,6 +88,7 @@ SC_CLIENT_ID = os.getenv("SC_CLIENT_ID", "").strip()
 SC_API_TIMEOUT_SEC = int(os.getenv("SC_API_TIMEOUT_SEC", "12"))
 SC_ARTIST_TRACK_LIMIT = int(os.getenv("SC_ARTIST_TRACK_LIMIT", "600"))
 SC_ARTIST_PAGE_SIZE = int(os.getenv("SC_ARTIST_PAGE_SIZE", "200"))
+SC_USER_TRACK_SOURCE = os.getenv("SC_USER_TRACK_SOURCE", "yt-dlp").strip().lower()
 MAX_TRACK_DURATION_SEC = int(os.getenv("MAX_TRACK_DURATION_SEC", "0"))
 MIN_TRACK_DURATION_SEC = int(os.getenv("MIN_TRACK_DURATION_SEC", "0"))
 YTDLP_AUDIO_BITRATE = int(os.getenv("YTDLP_AUDIO_BITRATE", "64"))
@@ -1187,6 +1188,34 @@ def search_soundcloud(query: str, limit: int, include_covers: bool = True) -> li
     return parse_search_results(result.stdout, include_covers=include_covers)
 
 
+def search_soundcloud_user_yt(query: str) -> dict | None:
+    if not query:
+        return None
+    if "soundcloud.com/" in query:
+        username = query.rstrip("/").split("/")[-1]
+        return {"username": username, "permalink": username, "permalink_url": query}
+    return {"username": query.strip(), "permalink": query.strip(), "permalink_url": f"https://soundcloud.com/{slugify_sc_user(query)}"}
+
+
+def get_soundcloud_user_tracks_yt(user_url: str, limit: int) -> list:
+    safe_limit = max(1, min(limit, SC_ARTIST_TRACK_LIMIT))
+    timeout_sec = max(SC_SEARCH_TIMEOUT_SEC, 25 + safe_limit // 3)
+    cmd = [
+        "yt-dlp",
+        *build_common_yt_dlp_args(),
+        "--flat-playlist",
+        "--dump-json",
+        "--playlist-end",
+        str(safe_limit),
+        "--skip-download",
+        user_url,
+    ]
+    result = run_yt_dlp(cmd, timeout=timeout_sec)
+    if result.returncode != 0:
+        return []
+    return parse_search_results(result.stdout, include_covers=True)
+
+
 def is_soundcloud_api_configured() -> bool:
     return bool(SC_CLIENT_ID)
 
@@ -1390,17 +1419,31 @@ def group_soundcloud_tracks_by_album(tracks: list) -> list:
 
 
 def build_soundcloud_artist_catalog(query: str) -> tuple[dict | None, list]:
-    user = search_soundcloud_user(query)
-    if not user:
-        return None, []
-    user_id = user.get("id")
-    avatar = normalize_sc_cover(user.get("avatar_url"))
-    raw_tracks = get_soundcloud_user_tracks(user_id, SC_ARTIST_TRACK_LIMIT)
+    user = None
     tracks = []
-    for item in raw_tracks:
-        mapped = map_soundcloud_track(item, default_artist=user.get("username"), default_cover=avatar)
-        if mapped:
-            tracks.append(mapped)
+    avatar = None
+    user_url = None
+
+    if SC_USER_TRACK_SOURCE == "yt-dlp":
+        user = search_soundcloud_user_yt(query)
+        if user:
+            user_url = user.get("permalink_url")
+            raw_tracks = get_soundcloud_user_tracks_yt(user_url, SC_ARTIST_TRACK_LIMIT)
+            for item in raw_tracks:
+                if item:
+                    tracks.append(item)
+    else:
+        user = search_soundcloud_user(query)
+        if not user:
+            return None, []
+        user_id = user.get("id")
+        avatar = normalize_sc_cover(user.get("avatar_url"))
+        raw_tracks = get_soundcloud_user_tracks(user_id, SC_ARTIST_TRACK_LIMIT)
+        for item in raw_tracks:
+            mapped = map_soundcloud_track(item, default_artist=user.get("username"), default_cover=avatar)
+            if mapped:
+                tracks.append(mapped)
+
     if tracks and is_spotify_configured():
         limit = max(0, min(SPOTIFY_ARTIST_META_LIMIT, len(tracks)))
         for idx, item in enumerate(tracks):
@@ -1424,12 +1467,12 @@ def build_soundcloud_artist_catalog(query: str) -> tuple[dict | None, list]:
                 )
     albums = group_soundcloud_tracks_by_album(tracks)
     artist = {
-        "id": user.get("id"),
-        "name": user.get("username") or user.get("permalink"),
+        "id": user.get("id") if user else None,
+        "name": (user.get("username") or user.get("permalink")) if user else query,
         "image": avatar,
-        "followers": user.get("followers_count"),
+        "followers": user.get("followers_count") if user else None,
         "genres": [],
-        "url": user.get("permalink_url") or "",
+        "url": (user.get("permalink_url") or user_url or "") if user else (user_url or ""),
     }
     return artist, albums
 
