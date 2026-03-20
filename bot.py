@@ -665,11 +665,23 @@ def get_spotify_album_tracks(album_id: str) -> list:
 def build_artist_catalog_from_search(query: str, limit: int = 50) -> list:
     if not query:
         return []
-    results = search_spotify(query, limit=limit, include_meta=True, offset=0)
+    results, _ = search_music(
+        query=query,
+        limit=limit,
+        artist_mode=False,
+        include_covers=True,
+        source="spotify",
+        include_meta=True,
+        offset=0,
+    )
     if not results:
         return []
     albums_map = {}
+    ql = query.lower()
     for track in results:
+        artist_name = (track.get("artist") or "").lower()
+        if ql not in artist_name:
+            continue
         album_id = track.get("album_id") or track.get("album_name") or "unknown"
         album = albums_map.get(album_id)
         if not album:
