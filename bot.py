@@ -1382,9 +1382,18 @@ def start_http_api() -> None:
         if not query:
             return jsonify({"ok": False, "error": "query is required"}), 400
         artist = search_spotify_artist(query)
+        albums_with_tracks = build_artist_catalog_from_search(query, limit=50)
+        if not artist and albums_with_tracks:
+            artist = {
+                "id": None,
+                "name": query,
+                "image": None,
+                "followers": None,
+                "genres": [],
+                "url": "",
+            }
         if not artist:
             return jsonify({"ok": False, "error": "artist not found"}), 404
-        albums_with_tracks = build_artist_catalog_from_search(query, limit=50)
         if not albums_with_tracks:
             return jsonify({"ok": False, "error": "artist catalog empty"}), 200
         return jsonify({"ok": True, "artist": artist, "albums": albums_with_tracks})
