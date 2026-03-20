@@ -585,7 +585,10 @@
         const res = await fetch(`${ARTIST_URL}?query=${encodeURIComponent(query)}`);
         if (!res.ok) return;
         const data = await res.json();
-        if (!data.ok || !data.artist) return;
+        if (!data.ok || !data.artist || !(data.albums || []).length) {
+          artistCardEl.style.display = "none";
+          return;
+        }
         renderArtistCard(data.artist, data.albums || []);
       } catch (e) {
         console.error("Artist card error:", e);

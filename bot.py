@@ -662,6 +662,39 @@ def get_spotify_album_tracks(album_id: str) -> list:
     return tracks
 
 
+def build_artist_catalog_from_search(artist_name: str, limit: int = 50) -> list:
+    if not artist_name:
+        return []
+    query = f'artist:"{artist_name}"'
+    results = search_spotify(query, limit=limit, include_meta=True, offset=0)
+    if not results:
+        return []
+    albums_map = {}
+    for track in results:
+        album_id = track.get("album_id") or track.get("album_name") or "unknown"
+        album = albums_map.get(album_id)
+        if not album:
+            album = {
+                "id": track.get("album_id"),
+                "name": track.get("album_name") or "Без альбома",
+                "release_date": track.get("release_date"),
+                "cover_url": track.get("cover_url"),
+                "tracks": [],
+            }
+            albums_map[album_id] = album
+        album["tracks"].append(
+            {
+                "id": track.get("spotify_id") or track.get("id"),
+                "title": track.get("title"),
+                "artist": track.get("artist"),
+                "duration": track.get("duration"),
+                "url": track.get("url"),
+                "source": "spotify",
+            }
+        )
+    return list(albums_map.values())
+
+
 def spotify_lookup_track(title: str, artist: str | None = None) -> dict | None:
     token = get_spotify_token()
     if not token:
@@ -1309,11 +1342,9 @@ def start_http_api() -> None:
         artist = search_spotify_artist(query)
         if not artist:
             return jsonify({"ok": False, "error": "artist not found"}), 404
-        albums = get_spotify_artist_albums(artist["id"], SPOTIFY_ARTIST_ALBUM_LIMIT)
-        albums_with_tracks = []
-        for album in albums:
-            tracks = get_spotify_album_tracks(album["id"])
-            albums_with_tracks.append({**album, "tracks": tracks})
+        albums_with_tracks = build_artist_catalog_from_search(artist["name"], limit=50)
+        if not albums_with_tracks:
+            return jsonify({"ok": False, "error": "artist catalog empty"}), 200
         return jsonify({"ok": True, "artist": artist, "albums": albums_with_tracks})
 
     @app.get("/api/new-releases")
