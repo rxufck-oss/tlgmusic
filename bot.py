@@ -58,7 +58,11 @@ SEARCH_CACHE_MAX_ITEMS = int(os.getenv("SEARCH_CACHE_MAX_ITEMS", "200"))
 NEW_RELEASES_CACHE_TTL = int(os.getenv("NEW_RELEASES_CACHE_TTL", "600"))
 WEBAPP_STATIC_DIR = os.getenv("WEBAPP_STATIC_DIR", "").strip()
 SPOTIFY_META_LIMIT = int(os.getenv("SPOTIFY_META_LIMIT", "10"))
-SPOTIFY_ARTIST_ALBUM_LIMIT = int(os.getenv("SPOTIFY_ARTIST_ALBUM_LIMIT", "12"))
+SPOTIFY_ARTIST_ALBUM_LIMIT = int(os.getenv("SPOTIFY_ARTIST_ALBUM_LIMIT", "200"))
+SPOTIFY_ARTIST_INCLUDE_GROUPS = os.getenv(
+    "SPOTIFY_ARTIST_INCLUDE_GROUPS",
+    "album,single,appears_on,compilation",
+).strip()
 SPOTIFY_ARTIST_TRACK_LIMIT = int(os.getenv("SPOTIFY_ARTIST_TRACK_LIMIT", "200"))
 SPOTIFY_ARTIST_EXPAND_ALBUMS = os.getenv("SPOTIFY_ARTIST_EXPAND_ALBUMS", "1").strip() == "1"
 TRENDING_ARTISTS = [
@@ -693,84 +697,122 @@ def search_spotify_artist(query: str) -> dict | None:
     return candidates[0]
 
 
-def get_spotify_artist_albums(artist_id: str, limit: int = 20) -> list:
+def get_spotify_artist_albums(artist_id: str, limit: int = 20, include_groups: str | None = None) -> list:
     token = get_spotify_token()
     if not token or not artist_id:
         return []
-    safe_limit = max(1, min(limit, 50))
-    url = (
-        f"https://api.spotify.com/v1/artists/{artist_id}/albums"
-        f"?include_groups=album,single&limit={safe_limit}"
-    )
-    payload = http_json_request(
-        url,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json",
-            "User-Agent": "Mozilla/5.0",
-        },
-        proxy=SPOTIFY_PROXY or None,
-    )
-    items = (payload or {}).get("items") or []
+    groups = include_groups or SPOTIFY_ARTIST_INCLUDE_GROUPS or "album,single,appears_on,compilation"
+    safe_limit = max(1, min(limit, 200))
+    offset = 0
+    per_page = 50
     albums = []
-    for it in items:
-        images = it.get("images") or []
-        albums.append(
-            {
-                "id": it.get("id"),
-                "name": it.get("name"),
-                "release_date": it.get("release_date"),
-                "total_tracks": it.get("total_tracks"),
-                "cover_url": images[0].get("url") if images else None,
-                "url": ((it.get("external_urls") or {}).get("spotify") or ""),
-            }
+    seen = set()
+    while offset < safe_limit:
+        page_limit = min(per_page, safe_limit - offset)
+        url = (
+            f"https://api.spotify.com/v1/artists/{artist_id}/albums"
+            f"?include_groups={urllib.parse.quote(groups)}&limit={page_limit}&offset={offset}"
         )
+        payload = http_json_request(
+            url,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0",
+            },
+            proxy=SPOTIFY_PROXY or None,
+        )
+        items = (payload or {}).get("items") or []
+        if not items:
+            break
+        for it in items:
+            album_id = it.get("id")
+            if album_id and album_id in seen:
+                continue
+            if album_id:
+                seen.add(album_id)
+            images = it.get("images") or []
+            albums.append(
+                {
+                    "id": album_id,
+                    "name": it.get("name"),
+                    "release_date": it.get("release_date"),
+                    "total_tracks": it.get("total_tracks"),
+                    "cover_url": images[0].get("url") if images else None,
+                    "url": ((it.get("external_urls") or {}).get("spotify") or ""),
+                }
+            )
+        if len(items) < page_limit:
+            break
+        offset += page_limit
     return albums
 
 
-def get_spotify_album_tracks(album_id: str) -> list:
+def get_spotify_album_tracks(album_id: str, artist_id: str | None = None) -> list:
     token = get_spotify_token()
     if not token or not album_id:
         return []
     if SPOTIFY_ALBUM_TRACKS_CACHE_TTL > 0:
         cached = SPOTIFY_ALBUM_TRACKS_CACHE.get(album_id)
         if cached and time.time() - cached.get("created_at", 0) <= SPOTIFY_ALBUM_TRACKS_CACHE_TTL:
-            return cached.get("tracks") or []
-    url = f"https://api.spotify.com/v1/albums/{album_id}/tracks?limit=50"
-    payload = http_json_request(
-        url,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json",
-            "User-Agent": "Mozilla/5.0",
-        },
-        proxy=SPOTIFY_PROXY or None,
-    )
-    items = (payload or {}).get("items") or []
+            tracks = cached.get("tracks") or []
+            if artist_id:
+                filtered = []
+                for t in tracks:
+                    ids = t.get("artist_ids") or []
+                    if artist_id in ids:
+                        filtered.append(t)
+                return filtered
+            return tracks
     tracks = []
-    for it in items:
-        artists = it.get("artists") or []
-        artist = ", ".join([a.get("name", "") for a in artists if a.get("name")]).strip() or "Unknown Artist"
-        duration_ms = int(it.get("duration_ms") or 0)
-        duration_sec = duration_ms / 1000 if duration_ms else 0
-        if MIN_TRACK_DURATION_SEC and duration_sec and duration_sec < MIN_TRACK_DURATION_SEC:
-            continue
-        mins = duration_ms // 60000
-        secs = (duration_ms % 60000) // 1000
-        external_urls = it.get("external_urls") or {}
-        url = external_urls.get("spotify") or (f"https://open.spotify.com/track/{it.get('id')}" if it.get("id") else "")
-        tracks.append(
-            {
-                "id": it.get("id"),
-                "title": it.get("name", "Без названия"),
-                "artist": artist,
-                "duration": f"{mins}:{secs:02d}" if duration_ms else "?:??",
-                "url": url,
-                "source": "spotify",
-            }
+    offset = 0
+    per_page = 50
+    while True:
+        url = f"https://api.spotify.com/v1/albums/{album_id}/tracks?limit={per_page}&offset={offset}"
+        payload = http_json_request(
+            url,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0",
+            },
+            proxy=SPOTIFY_PROXY or None,
         )
+        items = (payload or {}).get("items") or []
+        if not items:
+            break
+        for it in items:
+            artists = it.get("artists") or []
+            artist_ids = [a.get("id") for a in artists if a.get("id")]
+            if artist_id and artist_id not in artist_ids:
+                continue
+            artist = ", ".join([a.get("name", "") for a in artists if a.get("name")]).strip() or "Unknown Artist"
+            duration_ms = int(it.get("duration_ms") or 0)
+            duration_sec = duration_ms / 1000 if duration_ms else 0
+            if MIN_TRACK_DURATION_SEC and duration_sec and duration_sec < MIN_TRACK_DURATION_SEC:
+                continue
+            mins = duration_ms // 60000
+            secs = (duration_ms % 60000) // 1000
+            external_urls = it.get("external_urls") or {}
+            url = external_urls.get("spotify") or (f"https://open.spotify.com/track/{it.get('id')}" if it.get("id") else "")
+            tracks.append(
+                {
+                    "id": it.get("id"),
+                    "title": it.get("name", "Без названия"),
+                    "artist": artist,
+                    "artist_ids": artist_ids,
+                    "duration": f"{mins}:{secs:02d}" if duration_ms else "?:??",
+                    "url": url,
+                    "source": "spotify",
+                }
+            )
+        if len(items) < per_page:
+            break
+        offset += per_page
     if SPOTIFY_ALBUM_TRACKS_CACHE_TTL > 0 and tracks:
         SPOTIFY_ALBUM_TRACKS_CACHE[album_id] = {"tracks": tracks, "created_at": time.time()}
+    if artist_id:
+        return [t for t in tracks if artist_id in (t.get("artist_ids") or [])]
     return tracks
 
 
@@ -788,7 +830,7 @@ def build_artist_catalog_from_artist(artist_id: str, fallback_albums: list | Non
     out = []
     for album in albums:
         album_id = album.get("id")
-        tracks = get_spotify_album_tracks(album_id) if album_id else []
+        tracks = get_spotify_album_tracks(album_id, artist_id=artist_id) if album_id else []
         if not tracks:
             fb = None
             if album_id and album_id in fallback_map:
@@ -805,7 +847,7 @@ def build_artist_catalog_from_artist(artist_id: str, fallback_albums: list | Non
                 "name": album.get("name") or "Альбом",
                 "release_date": album.get("release_date"),
                 "cover_url": album.get("cover_url"),
-                "tracks": tracks,
+                "tracks": [{k: v for k, v in t.items() if k != "artist_ids"} for t in tracks],
             }
         )
     return out or (fallback_albums or [])
@@ -881,7 +923,9 @@ def build_artist_catalog_from_search(query: str, limit: int = 50) -> list:
                 continue
             full_tracks = get_spotify_album_tracks(album_id)
             if full_tracks:
-                album["tracks"] = full_tracks
+            album["tracks"] = [
+                {k: v for k, v in t.items() if k != "artist_ids"} for t in full_tracks
+            ]
     return albums
 
 
