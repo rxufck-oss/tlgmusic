@@ -694,6 +694,13 @@ def build_artist_catalog_from_search(query: str, limit: int = 50) -> list:
         artist_name = (track.get("artist") or "").lower()
         if ql not in artist_name:
             continue
+        if not track.get("album_id") or not track.get("album_name"):
+            meta = spotify_lookup_track(track.get("title", ""), track.get("artist"))
+            if meta:
+                track["album_id"] = meta.get("album_id") or track.get("album_id")
+                track["album_name"] = meta.get("album_name") or track.get("album_name")
+                track["cover_url"] = meta.get("cover_url") or track.get("cover_url")
+                track["release_date"] = meta.get("release_date") or track.get("release_date")
         album_id = track.get("album_id") or track.get("album_name") or "unknown"
         album = albums_map.get(album_id)
         if not album:
