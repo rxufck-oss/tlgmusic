@@ -59,6 +59,7 @@ WEBAPP_STATIC_DIR = os.getenv("WEBAPP_STATIC_DIR", "").strip()
 SPOTIFY_META_LIMIT = int(os.getenv("SPOTIFY_META_LIMIT", "10"))
 SPOTIFY_ARTIST_ALBUM_LIMIT = int(os.getenv("SPOTIFY_ARTIST_ALBUM_LIMIT", "25"))
 SPOTIFY_ARTIST_TRACK_LIMIT = int(os.getenv("SPOTIFY_ARTIST_TRACK_LIMIT", "200"))
+SPOTIFY_ARTIST_EXPAND_ALBUMS = os.getenv("SPOTIFY_ARTIST_EXPAND_ALBUMS", "1").strip() == "1"
 TRENDING_ARTISTS = [
     a.strip()
     for a in os.getenv(
@@ -725,6 +726,14 @@ def build_artist_catalog_from_search(query: str, limit: int = 50) -> list:
             seen.add(key)
             deduped.append(t)
         album["tracks"] = deduped
+    if SPOTIFY_ARTIST_EXPAND_ALBUMS:
+        for album in albums[: min(len(albums), SPOTIFY_ARTIST_ALBUM_LIMIT)]:
+            album_id = album.get("id")
+            if not album_id:
+                continue
+            full_tracks = get_spotify_album_tracks(album_id)
+            if full_tracks:
+                album["tracks"] = full_tracks
     return albums
 
 
