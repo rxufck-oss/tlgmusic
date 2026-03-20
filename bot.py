@@ -671,15 +671,7 @@ def build_artist_catalog_from_search(query: str, limit: int = 50) -> list:
     results = []
     offset = 0
     while offset < max_limit:
-        batch, _ = search_music(
-            query=query,
-            limit=min(50, max_limit - offset),
-            artist_mode=False,
-            include_covers=True,
-            source="spotify",
-            include_meta=True,
-            offset=offset,
-        )
+        batch = search_spotify(query, limit=min(50, max_limit - offset), include_meta=True, offset=offset)
         if not batch:
             break
         results.extend(batch)
@@ -706,12 +698,12 @@ def build_artist_catalog_from_search(query: str, limit: int = 50) -> list:
                 track["album_name"] = meta.get("album_name") or track.get("album_name")
                 track["cover_url"] = meta.get("cover_url") or track.get("cover_url")
                 track["release_date"] = meta.get("release_date") or track.get("release_date")
-        album_id = track.get("album_id") or track.get("album_name") or "unknown"
+        album_id = track.get("album_id") or track.get("album_name") or "singles"
         album = albums_map.get(album_id)
         if not album:
             album = {
                 "id": track.get("album_id"),
-                "name": track.get("album_name") or "Без альбома",
+                "name": track.get("album_name") or "Синглы",
                 "release_date": track.get("release_date"),
                 "cover_url": track.get("cover_url"),
                 "tracks": [],
