@@ -9,6 +9,7 @@ import tempfile
 import time
 import urllib.request
 import urllib.parse
+import urllib.error
 import uuid
 import threading
 
@@ -247,22 +248,39 @@ def http_json_request(
     data: bytes | None = None,
     timeout: int = 25,
     proxy: str | None = None,
+    max_retries: int = 2,
 ) -> dict | None:
-    try:
-        req = urllib.request.Request(url, headers=headers or {}, method=method, data=data)
-        opener = None
-        if proxy:
-            opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
-        if opener:
-            resp = opener.open(req, timeout=timeout)
-        else:
-            resp = urllib.request.urlopen(req, timeout=timeout)
-        with resp:
-            raw = resp.read().decode("utf-8", errors="ignore")
-            return json.loads(raw)
-    except Exception as e:
-        logger.error("HTTP JSON request failed (%s): %s", url, e)
-        return None
+    attempt = 0
+    while True:
+        try:
+            req = urllib.request.Request(url, headers=headers or {}, method=method, data=data)
+            opener = None
+            if proxy:
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+            if opener:
+                resp = opener.open(req, timeout=timeout)
+            else:
+                resp = urllib.request.urlopen(req, timeout=timeout)
+            with resp:
+                raw = resp.read().decode("utf-8", errors="ignore")
+                return json.loads(raw)
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < max_retries:
+                retry_after = 0
+                try:
+                    retry_after = int(e.headers.get("Retry-After", "0"))
+                except (TypeError, ValueError):
+                    retry_after = 0
+                delay = retry_after if retry_after > 0 else (2 ** attempt)
+                logger.warning("HTTP 429 rate limit (%s), retrying in %ss", url, delay)
+                time.sleep(min(delay, 10))
+                attempt += 1
+                continue
+            logger.error("HTTP JSON request failed (%s): %s", url, e)
+            return None
+        except Exception as e:
+            logger.error("HTTP JSON request failed (%s): %s", url, e)
+            return None
 
 
 def is_spotify_configured() -> bool:
