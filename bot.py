@@ -103,6 +103,8 @@ SPOTIFY_ARTIST_CACHE: dict[str, dict] = {}
 SPOTIFY_ALBUM_TRACKS_CACHE: dict[str, dict] = {}
 SPOTIFY_RATE_LIMITED_UNTIL = 0.0
 SPOTIFY_LAST_REQUEST_AT = 0.0
+SPOTIFY_LAST_ERROR_TS = 0.0
+SPOTIFY_LAST_ERROR_MSG = ""
 SPOTIFY_LOCK = threading.Lock()
 SPOTIFY_SEM = threading.Semaphore(max(1, SPOTIFY_MAX_CONCURRENCY))
 NEW_RELEASES_CACHE: dict[str, dict] = {}
@@ -268,6 +270,8 @@ def http_json_request(
     is_spotify = "api.spotify.com" in (url or "") or "accounts.spotify.com" in (url or "")
     global SPOTIFY_RATE_LIMITED_UNTIL
     global SPOTIFY_LAST_REQUEST_AT
+    global SPOTIFY_LAST_ERROR_TS
+    global SPOTIFY_LAST_ERROR_MSG
     while True:
         try:
             if is_spotify:
@@ -303,9 +307,15 @@ def http_json_request(
                 attempt += 1
                 continue
             logger.error("HTTP JSON request failed (%s): %s", url, e)
+            if is_spotify:
+                SPOTIFY_LAST_ERROR_TS = time.time()
+                SPOTIFY_LAST_ERROR_MSG = f"HTTP {e.code}"
             return None
         except Exception as e:
             logger.error("HTTP JSON request failed (%s): %s", url, e)
+            if is_spotify:
+                SPOTIFY_LAST_ERROR_TS = time.time()
+                SPOTIFY_LAST_ERROR_MSG = str(e)
             return None
         finally:
             if is_spotify:
@@ -1645,6 +1655,8 @@ def start_http_api() -> None:
             return jsonify({"ok": False, "error": "spotify rate limited"}), 429
         artist = search_spotify_artist(query)
         if not artist or not artist.get("id"):
+            if time.time() - SPOTIFY_LAST_ERROR_TS < 30:
+                return jsonify({"ok": False, "error": f"spotify unavailable ({SPOTIFY_LAST_ERROR_MSG})"}), 503
             return jsonify({"ok": False, "error": "artist not found"}), 404
         albums_with_tracks = build_artist_catalog_from_artist(artist.get("id"), artist.get("name"))
         if time.time() < SPOTIFY_RATE_LIMITED_UNTIL and (not artist or not albums_with_tracks):
