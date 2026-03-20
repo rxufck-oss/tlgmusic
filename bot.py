@@ -1198,6 +1198,21 @@ def normalize_sc_cover(url: str | None) -> str | None:
     return url.replace("-large", "-t500x500")
 
 
+def slugify_sc_user(name: str) -> str:
+    cleaned = []
+    prev_dash = False
+    for ch in (name or "").lower().strip():
+        if ch.isalnum():
+            cleaned.append(ch)
+            prev_dash = False
+        elif ch in (" ", "-", "_"):
+            if not prev_dash:
+                cleaned.append("-")
+                prev_dash = True
+    slug = "".join(cleaned).strip("-")
+    return slug
+
+
 def resolve_soundcloud_url(url: str) -> dict | None:
     if not is_soundcloud_api_configured() or not url:
         return None
@@ -1222,11 +1237,7 @@ def search_soundcloud_user(query: str) -> dict | None:
         f"?q={encoded_q}&limit=10&client_id={SC_CLIENT_ID}"
     )
     payload = http_json_request(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=SC_API_TIMEOUT_SEC)
-    if not payload:
-        return None
-    users = payload.get("collection") or []
-    if not users:
-        return None
+    users = (payload or {}).get("collection") or []
     qn = normalize_artist_name(query)
     best = None
     best_followers = -1
@@ -1241,7 +1252,45 @@ def search_soundcloud_user(query: str) -> dict | None:
         if followers > best_followers:
             best_followers = followers
             best = user
-    return best
+    if best:
+        return best
+
+    slug = slugify_sc_user(query)
+    if slug:
+        resolved = resolve_soundcloud_url(f"https://soundcloud.com/{slug}")
+        if resolved:
+            if resolved.get("kind") == "user":
+                return resolved
+            if resolved.get("kind") == "track":
+                return resolved.get("user") or None
+
+    # Fallback: use track search to infer the user.
+    track_payload = http_json_request(
+        f"https://api-v2.soundcloud.com/search/tracks?q={encoded_q}&limit=20&client_id={SC_CLIENT_ID}",
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=SC_API_TIMEOUT_SEC,
+    )
+    if track_payload:
+        items = track_payload.get("collection") or []
+        candidate = None
+        candidate_followers = -1
+        for it in items:
+            user = (it.get("user") or {})
+            name = user.get("username") or user.get("permalink") or ""
+            if not name:
+                continue
+            nn = normalize_artist_name(name)
+            if qn and nn == qn:
+                return user
+            if qn and qn in nn:
+                return user
+            followers = int(user.get("followers_count") or 0)
+            if followers > candidate_followers:
+                candidate_followers = followers
+                candidate = user
+        if candidate:
+            return candidate
+    return None
 
 
 def get_soundcloud_user_tracks(user_id: int, limit: int) -> list:
