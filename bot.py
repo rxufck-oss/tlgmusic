@@ -63,7 +63,7 @@ SPOTIFY_ARTIST_INCLUDE_GROUPS = os.getenv(
     "SPOTIFY_ARTIST_INCLUDE_GROUPS",
     "album,single,appears_on,compilation",
 ).strip()
-SPOTIFY_ARTIST_TRACK_LIMIT = int(os.getenv("SPOTIFY_ARTIST_TRACK_LIMIT", "200"))
+SPOTIFY_ARTIST_TRACK_LIMIT = int(os.getenv("SPOTIFY_ARTIST_TRACK_LIMIT", "1000"))
 SPOTIFY_ARTIST_EXPAND_ALBUMS = os.getenv("SPOTIFY_ARTIST_EXPAND_ALBUMS", "1").strip() == "1"
 TRENDING_ARTISTS = [
     a.strip()
@@ -581,6 +581,7 @@ def search_spotify(query: str, limit: int = 20, include_meta: bool = False, offs
     for it in items:
         artists = it.get("artists") or []
         artist = ", ".join([a.get("name", "") for a in artists if a.get("name")]).strip() or "Unknown Artist"
+        artist_ids = [a.get("id") for a in artists if a.get("id")]
         images = (it.get("album") or {}).get("images") or []
         cover = images[0].get("url") if images else None
         duration_ms = int(it.get("duration_ms") or 0)
@@ -595,6 +596,7 @@ def search_spotify(query: str, limit: int = 20, include_meta: bool = False, offs
             "url": ((it.get("external_urls") or {}).get("spotify") or ""),
             "cover_url": cover,
             "source": "spotify",
+            "artist_ids": artist_ids,
         }
         if include_meta:
             album = it.get("album") or {}
@@ -695,6 +697,68 @@ def search_spotify_artist(query: str) -> dict | None:
         if qn and qn in normalize_artist_name(artist.get("name", "")):
             return artist
     return candidates[0]
+
+
+def get_spotify_artist_tracks_by_search(
+    artist_name: str, artist_id: str | None = None, limit: int | None = None
+) -> list:
+    if not artist_name:
+        return []
+    max_limit = max(20, min(limit or SPOTIFY_ARTIST_TRACK_LIMIT, 1000))
+    results = []
+    offset = 0
+    query = f'artist:"{artist_name}"'
+    while offset < max_limit:
+        page_size = min(50, max_limit - offset)
+        batch_raw = search_spotify(query, limit=page_size, include_meta=True, offset=offset)
+        if not batch_raw:
+            break
+        batch = batch_raw
+        if artist_id:
+            batch = [t for t in batch_raw if artist_id in (t.get("artist_ids") or [])]
+        results.extend(batch)
+        if len(batch_raw) < page_size:
+            break
+        offset += page_size
+    return results
+
+
+def group_tracks_by_album(tracks: list) -> list:
+    albums_map: dict[str, dict] = {}
+    for track in tracks:
+        album_id = track.get("album_id") or track.get("album_name") or "singles"
+        album = albums_map.get(album_id)
+        if not album:
+            album = {
+                "id": track.get("album_id"),
+                "name": track.get("album_name") or "Синглы",
+                "release_date": track.get("release_date"),
+                "cover_url": track.get("cover_url"),
+                "tracks": [],
+            }
+            albums_map[album_id] = album
+        album["tracks"].append(
+            {
+                "id": track.get("spotify_id") or track.get("id"),
+                "title": track.get("title"),
+                "artist": track.get("artist"),
+                "duration": track.get("duration"),
+                "url": track.get("url"),
+                "source": "spotify",
+            }
+        )
+    albums = list(albums_map.values())
+    for album in albums:
+        seen = set()
+        deduped = []
+        for t in album["tracks"]:
+            key = f"{(t.get('title') or '').lower()}|{(t.get('artist') or '').lower()}"
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(t)
+        album["tracks"] = deduped
+    return albums
 
 
 def get_spotify_artist_albums(artist_id: str, limit: int = 20, include_groups: str | None = None) -> list:
@@ -816,17 +880,20 @@ def get_spotify_album_tracks(album_id: str, artist_id: str | None = None) -> lis
     return tracks
 
 
-def build_artist_catalog_from_artist(artist_id: str, fallback_albums: list | None = None) -> list:
+def build_artist_catalog_from_artist(artist_id: str, artist_name: str | None = None) -> list:
     if not artist_id:
         return []
+    tracks = get_spotify_artist_tracks_by_search(artist_name or "", artist_id, SPOTIFY_ARTIST_TRACK_LIMIT)
+    albums_from_tracks = group_tracks_by_album(tracks)
+    if not SPOTIFY_ARTIST_EXPAND_ALBUMS:
+        return albums_from_tracks
     albums = get_spotify_artist_albums(artist_id, limit=SPOTIFY_ARTIST_ALBUM_LIMIT)
-    fallback_map = {}
-    if fallback_albums:
-        for album in fallback_albums:
-            key = album.get("id") or album.get("name") or "singles"
-            fallback_map[key] = album
     if not albums:
-        return fallback_albums or []
+        return albums_from_tracks
+    fallback_map = {}
+    for album in albums_from_tracks:
+        key = album.get("id") or album.get("name") or "singles"
+        fallback_map[key] = album
     out = []
     for album in albums:
         album_id = album.get("id")
@@ -850,7 +917,7 @@ def build_artist_catalog_from_artist(artist_id: str, fallback_albums: list | Non
                 "tracks": [{k: v for k, v in t.items() if k != "artist_ids"} for t in tracks],
             }
         )
-    return out or (fallback_albums or [])
+    return out or albums_from_tracks
 
 
 def build_artist_catalog_from_search(query: str, limit: int = 50) -> list:
@@ -1579,7 +1646,7 @@ def start_http_api() -> None:
         artist = search_spotify_artist(query)
         if not artist or not artist.get("id"):
             return jsonify({"ok": False, "error": "artist not found"}), 404
-        albums_with_tracks = build_artist_catalog_from_artist(artist.get("id"))
+        albums_with_tracks = build_artist_catalog_from_artist(artist.get("id"), artist.get("name"))
         if time.time() < SPOTIFY_RATE_LIMITED_UNTIL and (not artist or not albums_with_tracks):
             return jsonify({"ok": False, "error": "spotify rate limited"}), 429
         if not artist:
