@@ -690,7 +690,9 @@ def build_artist_catalog_from_search(query: str, limit: int = 50) -> list:
         return []
     albums_map = {}
     def norm(s: str) -> str:
-        return "".join(ch.lower() if ch.isalnum() or ch.isspace() else " " for ch in s or "").strip()
+        s = (s or "").replace("$", "s").replace("&", "and")
+        cleaned = "".join(ch.lower() if ch.isalnum() else "" for ch in s)
+        return cleaned
 
     ql = norm(query)
     for track in results:
