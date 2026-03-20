@@ -74,6 +74,8 @@ SC_NEW_RELEASES_LIMIT = int(os.getenv("SC_NEW_RELEASES_LIMIT", "30"))
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
 SPOTIFY_PROXY = os.getenv("SPOTIFY_PROXY", "").strip()
+SPOTIFY_ARTIST_CACHE_TTL = int(os.getenv("SPOTIFY_ARTIST_CACHE_TTL", "900"))
+SPOTIFY_ALBUM_TRACKS_CACHE_TTL = int(os.getenv("SPOTIFY_ALBUM_TRACKS_CACHE_TTL", "21600"))
 SC_CLIENT_ID = os.getenv("SC_CLIENT_ID", "").strip()
 SC_API_TIMEOUT_SEC = int(os.getenv("SC_API_TIMEOUT_SEC", "12"))
 MAX_TRACK_DURATION_SEC = int(os.getenv("MAX_TRACK_DURATION_SEC", "0"))
@@ -91,6 +93,8 @@ DOWNLOAD_CACHE: dict[str, dict] = {}
 USER_LAST_SEARCH_TS: dict[int, float] = {}
 SEARCH_CACHE: dict[str, dict] = {}
 SPOTIFY_TOKEN_CACHE: dict[str, float | str] = {"token": "", "expires_at": 0}
+SPOTIFY_ARTIST_CACHE: dict[str, dict] = {}
+SPOTIFY_ALBUM_TRACKS_CACHE: dict[str, dict] = {}
 NEW_RELEASES_CACHE: dict[str, dict] = {}
 DB_CONN = None
 HTTP_API_THREAD = None
@@ -587,6 +591,26 @@ def normalize_artist_name(name: str) -> str:
     return "".join(ch.lower() if ch.isalnum() else "" for ch in name)
 
 
+def get_cached_artist_payload(query: str) -> dict | None:
+    if SPOTIFY_ARTIST_CACHE_TTL <= 0:
+        return None
+    key = normalize_artist_name(query)
+    cached = SPOTIFY_ARTIST_CACHE.get(key)
+    if not cached:
+        return None
+    if time.time() - cached.get("created_at", 0) > SPOTIFY_ARTIST_CACHE_TTL:
+        SPOTIFY_ARTIST_CACHE.pop(key, None)
+        return None
+    return cached.get("payload")
+
+
+def set_cached_artist_payload(query: str, payload: dict) -> None:
+    if SPOTIFY_ARTIST_CACHE_TTL <= 0:
+        return
+    key = normalize_artist_name(query)
+    SPOTIFY_ARTIST_CACHE[key] = {"payload": payload, "created_at": time.time()}
+
+
 def search_spotify_artist_candidates(query: str, limit: int = 5) -> list:
     token = get_spotify_token()
     if not token or not query:
@@ -679,6 +703,10 @@ def get_spotify_album_tracks(album_id: str) -> list:
     token = get_spotify_token()
     if not token or not album_id:
         return []
+    if SPOTIFY_ALBUM_TRACKS_CACHE_TTL > 0:
+        cached = SPOTIFY_ALBUM_TRACKS_CACHE.get(album_id)
+        if cached and time.time() - cached.get("created_at", 0) <= SPOTIFY_ALBUM_TRACKS_CACHE_TTL:
+            return cached.get("tracks") or []
     url = f"https://api.spotify.com/v1/albums/{album_id}/tracks?limit=50"
     payload = http_json_request(
         url,
@@ -712,6 +740,8 @@ def get_spotify_album_tracks(album_id: str) -> list:
                 "source": "spotify",
             }
         )
+    if SPOTIFY_ALBUM_TRACKS_CACHE_TTL > 0 and tracks:
+        SPOTIFY_ALBUM_TRACKS_CACHE[album_id] = {"tracks": tracks, "created_at": time.time()}
     return tracks
 
 
@@ -1455,6 +1485,9 @@ def start_http_api() -> None:
         query = str(request.args.get("query") or "").strip()
         if not query:
             return jsonify({"ok": False, "error": "query is required"}), 400
+        cached_payload = get_cached_artist_payload(query)
+        if cached_payload is not None:
+            return jsonify(cached_payload)
         artist = search_spotify_artist(query)
         albums_with_tracks = []
         if artist and artist.get("id"):
@@ -1471,10 +1504,16 @@ def start_http_api() -> None:
                 "url": "",
             }
         if not artist:
-            return jsonify({"ok": False, "error": "artist not found"}), 404
+            payload = {"ok": False, "error": "artist not found"}
+            set_cached_artist_payload(query, payload)
+            return jsonify(payload), 404
         if not albums_with_tracks:
-            return jsonify({"ok": False, "error": "artist catalog empty"}), 200
-        return jsonify({"ok": True, "artist": artist, "albums": albums_with_tracks})
+            payload = {"ok": False, "error": "artist catalog empty"}
+            set_cached_artist_payload(query, payload)
+            return jsonify(payload), 200
+        payload = {"ok": True, "artist": artist, "albums": albums_with_tracks}
+        set_cached_artist_payload(query, payload)
+        return jsonify(payload)
 
     @app.get("/api/new-releases")
     def api_new_releases():
