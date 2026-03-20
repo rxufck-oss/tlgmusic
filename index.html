@@ -451,7 +451,6 @@
       }
       if (query.toLowerCase() === lastQuery) return;
       searchMusic(query, false);
-      loadArtistCard(query);
     });
 
     async function searchMusic(query, append) {
@@ -491,6 +490,9 @@
           playlist = dedupeTracks(playlist.concat(incoming));
         }
         displayResults(playlist);
+        if (!append) {
+          loadArtistCardFromResults(query, playlist);
+        }
         if (incoming.length >= PAGE_SIZE) {
           searchOffset += PAGE_SIZE;
           loadMoreWrap.style.display = "block";
@@ -593,6 +595,14 @@
       } catch (e) {
         console.error("Artist card error:", e);
       }
+    }
+
+    function loadArtistCardFromResults(query, list) {
+      if (!list.length) return;
+      const primary = (list[0].artist || "").split(",")[0].trim();
+      const artistQuery = primary || query;
+      if (!artistQuery) return;
+      loadArtistCard(artistQuery);
     }
 
     function renderArtistCard(artist, albums) {
