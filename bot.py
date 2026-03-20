@@ -80,10 +80,14 @@ SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
 SPOTIFY_PROXY = os.getenv("SPOTIFY_PROXY", "").strip()
 SPOTIFY_ARTIST_CACHE_TTL = int(os.getenv("SPOTIFY_ARTIST_CACHE_TTL", "900"))
 SPOTIFY_ALBUM_TRACKS_CACHE_TTL = int(os.getenv("SPOTIFY_ALBUM_TRACKS_CACHE_TTL", "21600"))
+SPOTIFY_TRACK_META_CACHE_TTL = int(os.getenv("SPOTIFY_TRACK_META_CACHE_TTL", "86400"))
+SPOTIFY_ARTIST_META_LIMIT = int(os.getenv("SPOTIFY_ARTIST_META_LIMIT", "100"))
 SPOTIFY_MIN_INTERVAL_MS = int(os.getenv("SPOTIFY_MIN_INTERVAL_MS", "150"))
 SPOTIFY_MAX_CONCURRENCY = int(os.getenv("SPOTIFY_MAX_CONCURRENCY", "1"))
 SC_CLIENT_ID = os.getenv("SC_CLIENT_ID", "").strip()
 SC_API_TIMEOUT_SEC = int(os.getenv("SC_API_TIMEOUT_SEC", "12"))
+SC_ARTIST_TRACK_LIMIT = int(os.getenv("SC_ARTIST_TRACK_LIMIT", "600"))
+SC_ARTIST_PAGE_SIZE = int(os.getenv("SC_ARTIST_PAGE_SIZE", "200"))
 MAX_TRACK_DURATION_SEC = int(os.getenv("MAX_TRACK_DURATION_SEC", "0"))
 MIN_TRACK_DURATION_SEC = int(os.getenv("MIN_TRACK_DURATION_SEC", "0"))
 YTDLP_AUDIO_BITRATE = int(os.getenv("YTDLP_AUDIO_BITRATE", "64"))
@@ -101,6 +105,7 @@ SEARCH_CACHE: dict[str, dict] = {}
 SPOTIFY_TOKEN_CACHE: dict[str, float | str] = {"token": "", "expires_at": 0}
 SPOTIFY_ARTIST_CACHE: dict[str, dict] = {}
 SPOTIFY_ALBUM_TRACKS_CACHE: dict[str, dict] = {}
+SPOTIFY_TRACK_META_CACHE: dict[str, dict] = {}
 SPOTIFY_RATE_LIMITED_UNTIL = 0.0
 SPOTIFY_LAST_REQUEST_AT = 0.0
 SPOTIFY_LAST_ERROR_TS = 0.0
@@ -656,6 +661,34 @@ def set_cached_artist_payload(query: str, payload: dict) -> None:
     SPOTIFY_ARTIST_CACHE[key] = {"payload": payload, "created_at": time.time()}
 
 
+def _track_meta_cache_key(title: str, artist: str | None) -> str:
+    title_key = (title or "").strip().lower()
+    artist_key = normalize_artist_name(artist or "")
+    return f"{artist_key}|{title_key}"
+
+
+def get_cached_spotify_track_meta(title: str, artist: str | None) -> dict | None:
+    if SPOTIFY_TRACK_META_CACHE_TTL <= 0:
+        return None
+    key = _track_meta_cache_key(title, artist)
+    cached = SPOTIFY_TRACK_META_CACHE.get(key)
+    if not cached:
+        return None
+    if time.time() - cached.get("created_at", 0) > SPOTIFY_TRACK_META_CACHE_TTL:
+        SPOTIFY_TRACK_META_CACHE.pop(key, None)
+        return None
+    return cached.get("meta")
+
+
+def set_cached_spotify_track_meta(title: str, artist: str | None, meta: dict) -> None:
+    if SPOTIFY_TRACK_META_CACHE_TTL <= 0:
+        return
+    if not meta:
+        return
+    key = _track_meta_cache_key(title, artist)
+    SPOTIFY_TRACK_META_CACHE[key] = {"meta": meta, "created_at": time.time()}
+
+
 def search_spotify_artist_candidates(query: str, limit: int = 5) -> list:
     token = get_spotify_token()
     if not token or not query:
@@ -1013,6 +1046,10 @@ def spotify_lookup_track(title: str, artist: str | None = None) -> dict | None:
     if not query:
         return None
 
+    cached = get_cached_spotify_track_meta(title, artist)
+    if cached:
+        return cached
+
     encoded_q = urllib.parse.quote(query)
     url = f"https://api.spotify.com/v1/search?q={encoded_q}&type=track&limit=1"
     payload = http_json_request(
@@ -1038,7 +1075,7 @@ def spotify_lookup_track(title: str, artist: str | None = None) -> dict | None:
     cover = images[0].get("url") if images else None
     external_ids = it.get("external_ids") or {}
     album = it.get("album") or {}
-    return {
+    meta = {
         "spotify_id": it.get("id"),
         "spotify_url": ((it.get("external_urls") or {}).get("spotify") or ""),
         "artist": artist_name,
@@ -1051,6 +1088,8 @@ def spotify_lookup_track(title: str, artist: str | None = None) -> dict | None:
         "preview_url": it.get("preview_url"),
         "isrc": external_ids.get("isrc"),
     }
+    set_cached_spotify_track_meta(title, artist, meta)
+    return meta
 
 
 def resolve_spotify_to_soundcloud(track_url: str, title: str | None = None, artist: str | None = None) -> str | None:
@@ -1157,6 +1196,193 @@ def normalize_sc_cover(url: str | None) -> str | None:
         return None
     # Upgrade artwork size when possible.
     return url.replace("-large", "-t500x500")
+
+
+def resolve_soundcloud_url(url: str) -> dict | None:
+    if not is_soundcloud_api_configured() or not url:
+        return None
+    encoded = urllib.parse.quote(url, safe="")
+    api = f"https://api-v2.soundcloud.com/resolve?url={encoded}&client_id={SC_CLIENT_ID}"
+    return http_json_request(api, headers={"User-Agent": "Mozilla/5.0"}, timeout=SC_API_TIMEOUT_SEC)
+
+
+def search_soundcloud_user(query: str) -> dict | None:
+    if not is_soundcloud_api_configured() or not query:
+        return None
+    if "soundcloud.com/" in query:
+        resolved = resolve_soundcloud_url(query)
+        if resolved:
+            if resolved.get("kind") == "user":
+                return resolved
+            if resolved.get("kind") == "track":
+                return resolved.get("user") or None
+    encoded_q = urllib.parse.quote(query)
+    url = (
+        "https://api-v2.soundcloud.com/search/users"
+        f"?q={encoded_q}&limit=10&client_id={SC_CLIENT_ID}"
+    )
+    payload = http_json_request(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=SC_API_TIMEOUT_SEC)
+    if not payload:
+        return None
+    users = payload.get("collection") or []
+    if not users:
+        return None
+    qn = normalize_artist_name(query)
+    best = None
+    best_followers = -1
+    for user in users:
+        name = user.get("username") or user.get("permalink") or ""
+        nn = normalize_artist_name(name)
+        if qn and nn == qn:
+            return user
+        if qn and qn in nn:
+            return user
+        followers = int(user.get("followers_count") or 0)
+        if followers > best_followers:
+            best_followers = followers
+            best = user
+    return best
+
+
+def get_soundcloud_user_tracks(user_id: int, limit: int) -> list:
+    if not is_soundcloud_api_configured() or not user_id:
+        return []
+    safe_limit = max(1, min(limit, SC_ARTIST_TRACK_LIMIT))
+    page_size = max(50, min(SC_ARTIST_PAGE_SIZE, 200))
+    offset = 0
+    tracks = []
+    next_url = (
+        f"https://api-v2.soundcloud.com/users/{user_id}/tracks"
+        f"?limit={page_size}&offset={offset}&linked_partitioning=1&client_id={SC_CLIENT_ID}"
+    )
+    while next_url and len(tracks) < safe_limit:
+        payload = http_json_request(next_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=SC_API_TIMEOUT_SEC)
+        if not payload:
+            break
+        collection = payload.get("collection") or []
+        if not collection:
+            break
+        for it in collection:
+            tracks.append(it)
+            if len(tracks) >= safe_limit:
+                break
+        next_url = payload.get("next_href")
+        if next_url and "client_id=" not in next_url:
+            next_url = f"{next_url}&client_id={SC_CLIENT_ID}"
+    return tracks
+
+
+def map_soundcloud_track(track: dict, default_artist: str | None = None, default_cover: str | None = None) -> dict:
+    artist = (track.get("user") or {}).get("username") or default_artist
+    duration_ms = int(track.get("duration") or 0)
+    duration_sec = duration_ms / 1000 if duration_ms else 0
+    if MIN_TRACK_DURATION_SEC and duration_sec and duration_sec < MIN_TRACK_DURATION_SEC:
+        return {}
+    if MAX_TRACK_DURATION_SEC and duration_sec and duration_sec > MAX_TRACK_DURATION_SEC:
+        return {}
+    mins = duration_ms // 60000
+    secs = (duration_ms % 60000) // 1000
+    cover = normalize_sc_cover(track.get("artwork_url")) or normalize_sc_cover(default_cover)
+    album_title = None
+    publisher = track.get("publisher_metadata") or {}
+    if publisher:
+        album_title = publisher.get("album_title")
+    album_title = album_title or track.get("album_title")
+    return {
+        "id": track.get("id"),
+        "title": track.get("title", "Без названия"),
+        "artist": artist,
+        "duration": f"{mins}:{secs:02d}" if duration_ms else "?:??",
+        "duration_sec": duration_sec,
+        "url": track.get("permalink_url") or track.get("uri"),
+        "cover_url": cover,
+        "album_name": album_title,
+        "source": "soundcloud",
+    }
+
+
+def group_soundcloud_tracks_by_album(tracks: list) -> list:
+    albums_map: dict[str, dict] = {}
+    for track in tracks:
+        album_name = track.get("album_name") or "Без альбома"
+        album_id = album_name
+        album = albums_map.get(album_id)
+        if not album:
+            album = {
+                "id": None,
+                "name": album_name,
+                "release_date": None,
+                "cover_url": track.get("cover_url"),
+                "tracks": [],
+            }
+            albums_map[album_id] = album
+        album["tracks"].append(
+            {
+                "id": track.get("id"),
+                "title": track.get("title"),
+                "artist": track.get("artist"),
+                "duration": track.get("duration"),
+                "url": track.get("url"),
+                "source": "soundcloud",
+            }
+        )
+    albums = list(albums_map.values())
+    for album in albums:
+        seen = set()
+        deduped = []
+        for t in album["tracks"]:
+            key = f"{(t.get('title') or '').lower()}|{(t.get('artist') or '').lower()}"
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(t)
+        album["tracks"] = deduped
+    return albums
+
+
+def build_soundcloud_artist_catalog(query: str) -> tuple[dict | None, list]:
+    user = search_soundcloud_user(query)
+    if not user:
+        return None, []
+    user_id = user.get("id")
+    avatar = normalize_sc_cover(user.get("avatar_url"))
+    raw_tracks = get_soundcloud_user_tracks(user_id, SC_ARTIST_TRACK_LIMIT)
+    tracks = []
+    for item in raw_tracks:
+        mapped = map_soundcloud_track(item, default_artist=user.get("username"), default_cover=avatar)
+        if mapped:
+            tracks.append(mapped)
+    if tracks and is_spotify_configured():
+        limit = max(0, min(SPOTIFY_ARTIST_META_LIMIT, len(tracks)))
+        for idx, item in enumerate(tracks):
+            if limit and idx >= limit:
+                continue
+            meta = spotify_lookup_track(item.get("title", ""), item.get("artist"))
+            if meta:
+                item.update(
+                    {
+                        "spotify_id": meta.get("spotify_id"),
+                        "spotify_url": meta.get("spotify_url"),
+                        "album_name": meta.get("album_name") or item.get("album_name"),
+                        "album_id": meta.get("album_id"),
+                        "release_date": meta.get("release_date"),
+                        "popularity": meta.get("popularity"),
+                        "explicit": meta.get("explicit"),
+                        "preview_url": meta.get("preview_url"),
+                        "isrc": meta.get("isrc"),
+                        "cover_url": meta.get("cover_url") or item.get("cover_url"),
+                    }
+                )
+    albums = group_soundcloud_tracks_by_album(tracks)
+    artist = {
+        "id": user.get("id"),
+        "name": user.get("username") or user.get("permalink"),
+        "image": avatar,
+        "followers": user.get("followers_count"),
+        "genres": [],
+        "url": user.get("permalink_url") or "",
+    }
+    return artist, albums
 
 
 def search_soundcloud_api(query: str, limit: int, include_covers: bool = True) -> list:
@@ -1271,6 +1497,7 @@ def search_music(
         target_limit = max(1, min(limit or MAX_SEARCH_RESULTS, 200))
         if artist_mode:
             target_limit = max(target_limit, ARTIST_SEARCH_RESULTS)
+        source = "soundcloud"
 
         if "soundcloud.com/" in query:
             return [
@@ -1290,15 +1517,41 @@ def search_music(
         if cached is not None:
             return cached, None
 
-        if source == "spotify":
-            if not is_spotify_configured():
-                return [], "Spotify не настроен. Добавьте SPOTIFY_CLIENT_ID и SPOTIFY_CLIENT_SECRET."
-            spotify_results = search_spotify(query, target_limit, include_meta=include_meta, offset=offset)
-            if spotify_results:
-                set_search_cache(cache_key, spotify_results)
-                return spotify_results, None
-            # Fallback to SoundCloud if Spotify is blocked or returns nothing.
-            source = "soundcloud"
+        if artist_mode and is_soundcloud_api_configured():
+            artist = search_soundcloud_user(query)
+            if artist:
+                needed = min(SC_ARTIST_TRACK_LIMIT, target_limit + max(0, offset))
+                raw_tracks = get_soundcloud_user_tracks(artist.get("id"), needed)
+                mapped = []
+                avatar = normalize_sc_cover(artist.get("avatar_url"))
+                for item in raw_tracks:
+                    track = map_soundcloud_track(item, default_artist=artist.get("username"), default_cover=avatar)
+                    if track:
+                        mapped.append(track)
+                sliced = mapped[offset : offset + target_limit]
+                if include_meta and is_spotify_configured():
+                    limit = max(0, min(SPOTIFY_META_LIMIT, len(sliced)))
+                    for idx, item in enumerate(sliced):
+                        if limit and idx >= limit:
+                            continue
+                        meta = spotify_lookup_track(item.get("title", ""), item.get("artist"))
+                        if meta:
+                            item.update(
+                                {
+                                    "spotify_id": meta.get("spotify_id"),
+                                    "spotify_url": meta.get("spotify_url"),
+                                    "album_name": meta.get("album_name") or item.get("album_name"),
+                                    "album_id": meta.get("album_id"),
+                                    "release_date": meta.get("release_date"),
+                                    "popularity": meta.get("popularity"),
+                                    "explicit": meta.get("explicit"),
+                                    "preview_url": meta.get("preview_url"),
+                                    "isrc": meta.get("isrc"),
+                                    "cover_url": meta.get("cover_url") or item.get("cover_url"),
+                                }
+                            )
+                set_search_cache(cache_key, sliced)
+                return sliced, None
 
         videos = search_soundcloud_api(query, target_limit, include_covers=include_covers)
         if not videos:
@@ -1472,9 +1725,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(
-        "🎵 Отправь название трека или ссылку SoundCloud/Spotify.\n"
-        "Поиск: SoundCloud + Spotify (если настроен)\n"
-        "Скачивание MP3: через SoundCloud-источник\n"
+        "🎵 Отправь название трека или ссылку SoundCloud.\n"
+        "Поиск: SoundCloud (обложки из Spotify при наличии)\n"
+        "Скачивание MP3: через SoundCloud\n"
         "Команды:\n"
         "/help"
     )
@@ -1501,8 +1754,8 @@ async def handle_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not allowed:
         return
 
-    source = "spotify" if query_text.lower().startswith("sp ") or "spotify.com/" in query_text.lower() else "soundcloud"
-    clean_query = query_text[3:].strip() if query_text.lower().startswith("sp ") else query_text
+    source = "soundcloud"
+    clean_query = query_text
     videos, error = await asyncio.to_thread(search_music, clean_query, BOT_RESULTS_LIMIT, False, True, source)
     username = context.bot.username
 
@@ -1544,8 +1797,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⏱ Подожди {wait_sec} сек перед новым поиском.")
         return
 
-    source = "spotify" if query.lower().startswith("sp ") or "spotify.com/" in query.lower() else "soundcloud"
-    clean_query = query[3:].strip() if query.lower().startswith("sp ") else query
+    source = "soundcloud"
+    clean_query = query
 
     search_msg = await update.message.reply_text(
         f"🔍 Ищу в *{source}*: *{clean_query}*...",
@@ -1643,24 +1896,15 @@ def start_http_api() -> None:
 
     @app.get("/api/artist")
     def api_artist():
-        if not is_spotify_configured():
-            return jsonify({"ok": False, "error": "Spotify не настроен"}), 400
+        if not is_soundcloud_api_configured():
+            return jsonify({"ok": False, "error": "SoundCloud не настроен"}), 400
         query = str(request.args.get("query") or "").strip()
         if not query:
             return jsonify({"ok": False, "error": "query is required"}), 400
         cached_payload = get_cached_artist_payload(query)
         if cached_payload is not None:
             return jsonify(cached_payload)
-        if time.time() < SPOTIFY_RATE_LIMITED_UNTIL:
-            return jsonify({"ok": False, "error": "spotify rate limited"}), 429
-        artist = search_spotify_artist(query)
-        if not artist or not artist.get("id"):
-            if time.time() - SPOTIFY_LAST_ERROR_TS < 30:
-                return jsonify({"ok": False, "error": f"spotify unavailable ({SPOTIFY_LAST_ERROR_MSG})"}), 503
-            return jsonify({"ok": False, "error": "artist not found"}), 404
-        albums_with_tracks = build_artist_catalog_from_artist(artist.get("id"), artist.get("name"))
-        if time.time() < SPOTIFY_RATE_LIMITED_UNTIL and (not artist or not albums_with_tracks):
-            return jsonify({"ok": False, "error": "spotify rate limited"}), 429
+        artist, albums_with_tracks = build_soundcloud_artist_catalog(query)
         if not artist:
             return jsonify({"ok": False, "error": "artist not found"}), 404
         if not albums_with_tracks:

@@ -473,7 +473,7 @@
             query,
             limit: PAGE_SIZE,
             offset: searchOffset,
-            source: "spotify",
+            source: "soundcloud",
             artistMode: false,
             includeMeta: true,
             includeCovers: true
@@ -514,7 +514,7 @@
         duration: raw.duration || raw.duration_string || "?:??",
         url: raw.url || raw.webpage_url || "",
         cover: raw.cover_url || raw.thumbnail || "",
-        source: raw.source || "spotify"
+        source: raw.source || "soundcloud"
       };
     }
 
@@ -641,7 +641,7 @@
             duration: t.duration,
             url: t.url,
             cover: album.cover_url,
-            source: "spotify"
+            source: "soundcloud"
           };
           const idx = artistModalTracks.push(trackObj) - 1;
           return `
@@ -743,7 +743,7 @@
             artist: track.artist,
             trackUrl: track.url,
             url: track.url,
-            source: "spotify",
+            source: "soundcloud",
             cover_url: track.cover
           })
         });
