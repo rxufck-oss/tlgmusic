@@ -76,6 +76,8 @@ SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
 SPOTIFY_PROXY = os.getenv("SPOTIFY_PROXY", "").strip()
 SPOTIFY_ARTIST_CACHE_TTL = int(os.getenv("SPOTIFY_ARTIST_CACHE_TTL", "900"))
 SPOTIFY_ALBUM_TRACKS_CACHE_TTL = int(os.getenv("SPOTIFY_ALBUM_TRACKS_CACHE_TTL", "21600"))
+SPOTIFY_MIN_INTERVAL_MS = int(os.getenv("SPOTIFY_MIN_INTERVAL_MS", "150"))
+SPOTIFY_MAX_CONCURRENCY = int(os.getenv("SPOTIFY_MAX_CONCURRENCY", "1"))
 SC_CLIENT_ID = os.getenv("SC_CLIENT_ID", "").strip()
 SC_API_TIMEOUT_SEC = int(os.getenv("SC_API_TIMEOUT_SEC", "12"))
 MAX_TRACK_DURATION_SEC = int(os.getenv("MAX_TRACK_DURATION_SEC", "0"))
@@ -96,6 +98,9 @@ SPOTIFY_TOKEN_CACHE: dict[str, float | str] = {"token": "", "expires_at": 0}
 SPOTIFY_ARTIST_CACHE: dict[str, dict] = {}
 SPOTIFY_ALBUM_TRACKS_CACHE: dict[str, dict] = {}
 SPOTIFY_RATE_LIMITED_UNTIL = 0.0
+SPOTIFY_LAST_REQUEST_AT = 0.0
+SPOTIFY_LOCK = threading.Lock()
+SPOTIFY_SEM = threading.Semaphore(max(1, SPOTIFY_MAX_CONCURRENCY))
 NEW_RELEASES_CACHE: dict[str, dict] = {}
 DB_CONN = None
 HTTP_API_THREAD = None
@@ -256,9 +261,18 @@ def http_json_request(
     max_retries: int = 2,
 ) -> dict | None:
     attempt = 0
+    is_spotify = "api.spotify.com" in (url or "") or "accounts.spotify.com" in (url or "")
     global SPOTIFY_RATE_LIMITED_UNTIL
     while True:
         try:
+            if is_spotify:
+                SPOTIFY_SEM.acquire()
+                with SPOTIFY_LOCK:
+                    now = time.time()
+                    wait_s = max(0.0, (SPOTIFY_MIN_INTERVAL_MS / 1000.0) - (now - SPOTIFY_LAST_REQUEST_AT))
+                    if wait_s > 0:
+                        time.sleep(wait_s)
+                    SPOTIFY_LAST_REQUEST_AT = time.time()
             req = urllib.request.Request(url, headers=headers or {}, method=method, data=data)
             opener = None
             if proxy:
@@ -288,6 +302,12 @@ def http_json_request(
         except Exception as e:
             logger.error("HTTP JSON request failed (%s): %s", url, e)
             return None
+        finally:
+            if is_spotify:
+                try:
+                    SPOTIFY_SEM.release()
+                except Exception:
+                    pass
 
 
 def is_spotify_configured() -> bool:
