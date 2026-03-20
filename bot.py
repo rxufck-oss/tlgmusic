@@ -689,10 +689,13 @@ def build_artist_catalog_from_search(query: str, limit: int = 50) -> list:
     if not results:
         return []
     albums_map = {}
-    ql = query.lower()
+    def norm(s: str) -> str:
+        return "".join(ch.lower() if ch.isalnum() or ch.isspace() else " " for ch in s or "").strip()
+
+    ql = norm(query)
     for track in results:
-        artist_name = (track.get("artist") or "").lower()
-        if ql not in artist_name:
+        artist_name = norm(track.get("artist") or "")
+        if ql and ql not in artist_name:
             continue
         if not track.get("album_id") or not track.get("album_name"):
             meta = spotify_lookup_track(track.get("title", ""), track.get("artist"))
