@@ -637,10 +637,15 @@ def normalize_artist_name(name: str) -> str:
     return "".join(ch.lower() if ch.isalnum() else "" for ch in name)
 
 
-def get_cached_artist_payload(query: str) -> dict | None:
+def make_artist_cache_key(query: str, offset: int, limit: int) -> str:
+    base = normalize_artist_name(query)
+    return f"{base}|{max(0, int(offset))}|{max(0, int(limit))}"
+
+
+def get_cached_artist_payload(query: str, offset: int = 0, limit: int = 0) -> dict | None:
     if SPOTIFY_ARTIST_CACHE_TTL <= 0:
         return None
-    key = normalize_artist_name(query)
+    key = make_artist_cache_key(query, offset, limit)
     cached = SPOTIFY_ARTIST_CACHE.get(key)
     if not cached:
         return None
@@ -653,12 +658,12 @@ def get_cached_artist_payload(query: str) -> dict | None:
     return payload
 
 
-def set_cached_artist_payload(query: str, payload: dict) -> None:
+def set_cached_artist_payload(query: str, payload: dict, offset: int = 0, limit: int = 0) -> None:
     if SPOTIFY_ARTIST_CACHE_TTL <= 0:
         return
     if not payload or not payload.get("ok"):
         return
-    key = normalize_artist_name(query)
+    key = make_artist_cache_key(query, offset, limit)
     SPOTIFY_ARTIST_CACHE[key] = {"payload": payload, "created_at": time.time()}
 
 
@@ -1197,16 +1202,21 @@ def search_soundcloud_user_yt(query: str) -> dict | None:
     return {"username": query.strip(), "permalink": query.strip(), "permalink_url": f"https://soundcloud.com/{slugify_sc_user(query)}"}
 
 
-def get_soundcloud_user_tracks_yt(user_url: str, limit: int) -> list:
+def get_soundcloud_user_tracks_yt(user_url: str, limit: int, offset: int = 0) -> list:
     safe_limit = max(1, min(limit, SC_ARTIST_TRACK_LIMIT))
-    timeout_sec = max(SC_SEARCH_TIMEOUT_SEC, 25 + safe_limit // 3)
+    safe_offset = max(0, int(offset or 0))
+    start = safe_offset + 1
+    end = safe_offset + safe_limit
+    timeout_sec = max(SC_SEARCH_TIMEOUT_SEC, 20 + safe_limit // 3)
     cmd = [
         "yt-dlp",
         *build_common_yt_dlp_args(),
         "--flat-playlist",
         "--dump-json",
+        "--playlist-start",
+        str(start),
         "--playlist-end",
-        str(safe_limit),
+        str(end),
         "--skip-download",
         user_url,
     ]
@@ -1322,12 +1332,12 @@ def search_soundcloud_user(query: str) -> dict | None:
     return None
 
 
-def get_soundcloud_user_tracks(user_id: int, limit: int) -> list:
+def get_soundcloud_user_tracks(user_id: int, limit: int, offset: int = 0) -> list:
     if not is_soundcloud_api_configured() or not user_id:
         return []
     safe_limit = max(1, min(limit, SC_ARTIST_TRACK_LIMIT))
     page_size = max(50, min(SC_ARTIST_PAGE_SIZE, 200))
-    offset = 0
+    offset = max(0, int(offset or 0))
     tracks = []
     next_url = (
         f"https://api-v2.soundcloud.com/users/{user_id}/tracks"
@@ -1418,27 +1428,29 @@ def group_soundcloud_tracks_by_album(tracks: list) -> list:
     return albums
 
 
-def build_soundcloud_artist_catalog(query: str) -> tuple[dict | None, list]:
+def build_soundcloud_artist_catalog(query: str, offset: int = 0, limit: int | None = None) -> tuple[dict | None, list, dict]:
     user = None
     tracks = []
     avatar = None
     user_url = None
+    safe_offset = max(0, int(offset or 0))
+    safe_limit = max(1, min(int(limit or SC_ARTIST_TRACK_LIMIT), SC_ARTIST_TRACK_LIMIT))
 
     if SC_USER_TRACK_SOURCE == "yt-dlp":
         user = search_soundcloud_user_yt(query)
         if user:
             user_url = user.get("permalink_url")
-            raw_tracks = get_soundcloud_user_tracks_yt(user_url, SC_ARTIST_TRACK_LIMIT)
+            raw_tracks = get_soundcloud_user_tracks_yt(user_url, safe_limit, safe_offset)
             for item in raw_tracks:
                 if item:
                     tracks.append(item)
     else:
         user = search_soundcloud_user(query)
         if not user:
-            return None, []
+            return None, [], {"offset": safe_offset, "limit": safe_limit, "next_offset": None, "has_more": False}
         user_id = user.get("id")
         avatar = normalize_sc_cover(user.get("avatar_url"))
-        raw_tracks = get_soundcloud_user_tracks(user_id, SC_ARTIST_TRACK_LIMIT)
+        raw_tracks = get_soundcloud_user_tracks(user_id, safe_limit, safe_offset)
         for item in raw_tracks:
             mapped = map_soundcloud_track(item, default_artist=user.get("username"), default_cover=avatar)
             if mapped:
@@ -1474,7 +1486,9 @@ def build_soundcloud_artist_catalog(query: str) -> tuple[dict | None, list]:
         "genres": [],
         "url": (user.get("permalink_url") or user_url or "") if user else (user_url or ""),
     }
-    return artist, albums
+    next_offset = safe_offset + len(tracks) if len(tracks) >= safe_limit else None
+    page_info = {"offset": safe_offset, "limit": safe_limit, "next_offset": next_offset, "has_more": bool(next_offset)}
+    return artist, albums, page_info
 
 
 def search_soundcloud_api(query: str, limit: int, include_covers: bool = True) -> list:
@@ -1988,21 +2002,44 @@ def start_http_api() -> None:
 
     @app.get("/api/artist")
     def api_artist():
-        if not is_soundcloud_api_configured():
+        if SC_USER_TRACK_SOURCE != "yt-dlp" and not is_soundcloud_api_configured():
             return jsonify({"ok": False, "error": "SoundCloud не настроен"}), 400
         query = str(request.args.get("query") or "").strip()
         if not query:
             return jsonify({"ok": False, "error": "query is required"}), 400
-        cached_payload = get_cached_artist_payload(query)
+        raw_limit = request.args.get("limit")
+        raw_offset = request.args.get("offset")
+        try:
+            requested_limit = int(raw_limit) if raw_limit is not None else 50
+        except (TypeError, ValueError):
+            requested_limit = 50
+        try:
+            requested_offset = int(raw_offset) if raw_offset is not None else 0
+        except (TypeError, ValueError):
+            requested_offset = 0
+        requested_limit = max(1, min(requested_limit, SC_ARTIST_TRACK_LIMIT))
+        requested_offset = max(0, requested_offset)
+
+        cached_payload = get_cached_artist_payload(query, requested_offset, requested_limit)
         if cached_payload is not None:
             return jsonify(cached_payload)
-        artist, albums_with_tracks = build_soundcloud_artist_catalog(query)
+        artist, albums_with_tracks, page_info = build_soundcloud_artist_catalog(
+            query, offset=requested_offset, limit=requested_limit
+        )
         if not artist:
             return jsonify({"ok": False, "error": "artist not found"}), 404
         if not albums_with_tracks:
             return jsonify({"ok": False, "error": "artist catalog empty"}), 200
-        payload = {"ok": True, "artist": artist, "albums": albums_with_tracks}
-        set_cached_artist_payload(query, payload)
+        payload = {
+            "ok": True,
+            "artist": artist,
+            "albums": albums_with_tracks,
+            "offset": page_info.get("offset"),
+            "limit": page_info.get("limit"),
+            "next_offset": page_info.get("next_offset"),
+            "has_more": page_info.get("has_more"),
+        }
+        set_cached_artist_payload(query, payload, requested_offset, requested_limit)
         return jsonify(payload)
 
     @app.get("/api/new-releases")

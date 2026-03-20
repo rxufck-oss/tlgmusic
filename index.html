@@ -203,6 +203,10 @@
       cursor: pointer;
     }
 
+    .artist-modal .load-more-wrap {
+      padding: 4px 0 12px;
+    }
+
     .track {
       background: var(--bg-secondary);
       border: 1px solid var(--border);
@@ -407,6 +411,9 @@
     <div class="panel">
       <button class="close-btn" id="artistCloseBtn">Закрыть</button>
       <div id="artistModalBody"></div>
+      <div class="load-more-wrap" id="artistLoadMoreWrap">
+        <button class="load-more-btn" id="artistLoadMoreBtn">Загрузить еще</button>
+      </div>
     </div>
   </div>
 
@@ -437,10 +444,21 @@
     let searchAbort = null;
     let searchOffset = 0;
     const PAGE_SIZE = 50;
+    const ARTIST_PAGE_SIZE = 50;
     let artistModalTracks = [];
+    let artistState = {
+      query: "",
+      artist: null,
+      albums: [],
+      offset: 0,
+      hasMore: false,
+      loading: false
+    };
 
     const loadMoreWrap = document.getElementById("loadMoreWrap");
     const loadMoreBtn = document.getElementById("loadMoreBtn");
+    const artistLoadMoreWrap = document.getElementById("artistLoadMoreWrap");
+    const artistLoadMoreBtn = document.getElementById("artistLoadMoreBtn");
 
     searchInput.addEventListener("keydown", (e) => {
       if (e.key !== "Enter") return;
@@ -580,18 +598,81 @@
       return map;
     }
 
+    async function fetchArtistPage(query, offset = 0) {
+      const url = `${ARTIST_URL}?query=${encodeURIComponent(query)}&limit=${ARTIST_PAGE_SIZE}&offset=${offset}`;
+      const res = await fetch(url);
+      if (!res.ok) return null;
+      return res.json();
+    }
+
+    function dedupeAlbumTracks(tracks) {
+      const seen = new Set();
+      return (tracks || []).filter((t) => {
+        const key = `${(t.title || "").toLowerCase()}|${(t.artist || "").toLowerCase()}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    }
+
+    function mergeAlbums(existing, incoming) {
+      const map = new Map();
+      const order = [];
+
+      (existing || []).forEach((album) => {
+        const key = album.id || album.name || "Без альбома";
+        map.set(key, {
+          ...album,
+          tracks: dedupeAlbumTracks(album.tracks || [])
+        });
+        order.push(key);
+      });
+
+      (incoming || []).forEach((album) => {
+        const key = album.id || album.name || "Без альбома";
+        if (!map.has(key)) {
+          map.set(key, {
+            ...album,
+            tracks: dedupeAlbumTracks(album.tracks || [])
+          });
+          order.push(key);
+          return;
+        }
+        const current = map.get(key);
+        current.tracks = dedupeAlbumTracks((current.tracks || []).concat(album.tracks || []));
+        if (!current.cover_url && album.cover_url) current.cover_url = album.cover_url;
+        if (!current.release_date && album.release_date) current.release_date = album.release_date;
+      });
+
+      return order.map((key) => map.get(key));
+    }
+
     async function loadArtistCard(query) {
       if (!artistCardEl) return;
       artistCardEl.style.display = "none";
+      artistState = {
+        query,
+        artist: null,
+        albums: [],
+        offset: 0,
+        hasMore: false,
+        loading: false
+      };
       try {
-        const res = await fetch(`${ARTIST_URL}?query=${encodeURIComponent(query)}`);
-        if (!res.ok) return;
-        const data = await res.json();
-        if (!data.ok || !data.artist || !(data.albums || []).length) {
+        const data = await fetchArtistPage(query, 0);
+        if (!data || !data.ok || !data.artist) {
           artistCardEl.style.display = "none";
           return;
         }
-        renderArtistCard(data.artist, data.albums || []);
+        artistState.artist = data.artist;
+        artistState.albums = mergeAlbums([], data.albums || []);
+        artistState.offset = data.next_offset || 0;
+        artistState.hasMore = !!data.has_more;
+        if (!artistState.albums.length) {
+          artistCardEl.style.display = "none";
+          return;
+        }
+        renderArtistCard(artistState.artist);
       } catch (e) {
         console.error("Artist card error:", e);
       }
@@ -605,7 +686,7 @@
       loadArtistCard(artistQuery);
     }
 
-    function renderArtistCard(artist, albums) {
+    function renderArtistCard(artist) {
       if (!artistCardEl) return;
       const genres = (artist.genres || []).slice(0, 2).join(", ");
       const followers = artist.followers ? `${artist.followers.toLocaleString()} слушателей` : "";
@@ -617,11 +698,12 @@
         </div>
       `;
       artistCardEl.style.display = "flex";
-      artistCardEl.onclick = () => openArtistModal(artist, albums);
+      artistCardEl.onclick = () => openArtistModal();
     }
 
-    function openArtistModal(artist, albums) {
+    function renderArtistModal() {
       if (!artistModalEl) return;
+      const artist = artistState.artist || { name: artistState.query || "Артист", genres: [] };
       const header = `
         <div class="album-header">
           ${artist.image ? `<img class="album-cover" src="${escapeHtml(artist.image)}" alt="">` : `<div class="album-cover"></div>`}
@@ -632,41 +714,47 @@
         </div>
       `;
       artistModalTracks = [];
-      const body = albums.map((album) => {
-        const tracks = (album.tracks || []).map((t) => {
-          const trackObj = {
-            id: t.id || t.url || "",
-            title: t.title,
-            artist: t.artist,
-            duration: t.duration,
-            url: t.url,
-            cover: album.cover_url,
-            source: "soundcloud"
-          };
-          const idx = artistModalTracks.push(trackObj) - 1;
-          return `
-            <div class="track" data-i="${idx}">
-              <div class="track-info">
-                <div class="track-title">${escapeHtml(t.title)}</div>
-                <div class="track-duration">${escapeHtml(t.duration)}</div>
+      const albums = artistState.albums || [];
+      let body = "";
+      if (!albums.length) {
+        body = `<div class="empty">Ничего не найдено</div>`;
+      } else {
+        body = albums.map((album) => {
+          const tracks = (album.tracks || []).map((t) => {
+            const trackObj = {
+              id: t.id || t.url || "",
+              title: t.title,
+              artist: t.artist,
+              duration: t.duration,
+              url: t.url,
+              cover: album.cover_url,
+              source: "soundcloud"
+            };
+            const idx = artistModalTracks.push(trackObj) - 1;
+            return `
+              <div class="track" data-i="${idx}">
+                <div class="track-info">
+                  <div class="track-title">${escapeHtml(t.title)}</div>
+                  <div class="track-duration">${escapeHtml(t.duration)}</div>
+                </div>
+                <div class="track-play-icon">▶️</div>
               </div>
-              <div class="track-play-icon">▶️</div>
+            `;
+          }).join("");
+          return `
+            <div class="album-block">
+              <div class="album-header">
+                ${album.cover_url ? `<img class="album-cover" src="${escapeHtml(album.cover_url)}" alt="">` : `<div class="album-cover"></div>`}
+                <div>
+                  <div class="album-title">${escapeHtml(album.name || "Альбом")}</div>
+                  <div class="album-meta">${escapeHtml(album.release_date || "")}</div>
+                </div>
+              </div>
+              ${tracks}
             </div>
           `;
         }).join("");
-        return `
-          <div class="album-block">
-            <div class="album-header">
-              ${album.cover_url ? `<img class="album-cover" src="${escapeHtml(album.cover_url)}" alt="">` : `<div class="album-cover"></div>`}
-              <div>
-                <div class="album-title">${escapeHtml(album.name || "Альбом")}</div>
-                <div class="album-meta">${escapeHtml(album.release_date || "")}</div>
-              </div>
-            </div>
-            ${tracks}
-          </div>
-        `;
-      }).join("");
+      }
       artistModalBody.innerHTML = header + body;
       artistModalEl.style.display = "block";
       artistModalBody.querySelectorAll(".track").forEach((el) => {
@@ -675,6 +763,49 @@
           if (idx >= 0) sendTrack(artistModalTracks[idx]);
         };
       });
+      updateArtistLoadMore();
+    }
+
+    function updateArtistLoadMore() {
+      if (!artistLoadMoreWrap || !artistLoadMoreBtn) return;
+      if (!artistState.hasMore) {
+        artistLoadMoreWrap.style.display = "none";
+        return;
+      }
+      artistLoadMoreWrap.style.display = "block";
+      artistLoadMoreBtn.disabled = artistState.loading;
+      artistLoadMoreBtn.textContent = artistState.loading ? "Загрузка..." : "Загрузить еще";
+    }
+
+    async function loadArtistMore() {
+      if (artistState.loading || !artistState.hasMore || !artistState.query) return;
+      artistState.loading = true;
+      updateArtistLoadMore();
+      try {
+        const data = await fetchArtistPage(artistState.query, artistState.offset);
+        if (!data || !data.ok) {
+          artistState.hasMore = false;
+          updateArtistLoadMore();
+          return;
+        }
+        if (data.artist && !artistState.artist) {
+          artistState.artist = data.artist;
+        }
+        artistState.albums = mergeAlbums(artistState.albums || [], data.albums || []);
+        artistState.offset = data.next_offset || 0;
+        artistState.hasMore = !!data.has_more;
+        artistState.loading = false;
+        renderArtistModal();
+      } catch (e) {
+        artistState.loading = false;
+        updateArtistLoadMore();
+        console.error("Artist load more error:", e);
+      }
+    }
+
+    function openArtistModal() {
+      if (!artistState.artist) return;
+      renderArtistModal();
     }
 
     if (artistCloseBtn) {
@@ -813,6 +944,12 @@
       const q = searchInput.value.trim();
       if (q) searchMusic(q, true);
     };
+
+    if (artistLoadMoreBtn) {
+      artistLoadMoreBtn.onclick = () => {
+        loadArtistMore();
+      };
+    }
   </script>
 </body>
 </html>
