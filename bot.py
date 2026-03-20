@@ -1160,20 +1160,26 @@ def parse_search_results(stdout: str, include_covers: bool = True) -> list:
                     continue
             cover = None
             if include_covers:
-                cover = data.get("thumbnail")
+                cover = data.get("thumbnail") or data.get("artwork_url")
                 if not cover:
                     thumbs = data.get("thumbnails") or []
                     if thumbs and isinstance(thumbs, list):
                         cover = thumbs[-1].get("url")
+            album_title = data.get("album") or data.get("album_name")
+            if isinstance(album_title, dict):
+                album_title = album_title.get("name") or album_title.get("title")
+            url = data.get("webpage_url") or data.get("original_url") or data.get("url")
+            artist = data.get("uploader") or data.get("channel") or data.get("creator") or data.get("artist")
             results.append(
                 {
                     "id": data.get("id"),
                     "title": data.get("title", "Без названия"),
-                    "artist": data.get("uploader") or data.get("channel"),
+                    "artist": artist,
                     "duration": data.get("duration_string", "?:??"),
                     "duration_sec": duration_sec,
-                    "url": data.get("webpage_url"),
+                    "url": url,
                     "cover_url": cover,
+                    "album_name": album_title,
                     "source": "soundcloud",
                 }
             )
@@ -1210,6 +1216,12 @@ def search_soundcloud_user_yt(query: str) -> dict | None:
     return {"username": query.strip(), "permalink": query.strip(), "permalink_url": f"https://soundcloud.com/{slugify_sc_user(query)}"}
 
 
+def is_soundcloud_set_url(url: str | None) -> bool:
+    if not url:
+        return False
+    return "/sets/" in url
+
+
 def get_soundcloud_user_tracks_yt(user_url: str, limit: int, offset: int = 0) -> list:
     safe_limit = max(1, min(limit, SC_ARTIST_TRACK_LIMIT))
     safe_offset = max(0, int(offset or 0))
@@ -1219,7 +1231,6 @@ def get_soundcloud_user_tracks_yt(user_url: str, limit: int, offset: int = 0) ->
     cmd = [
         "yt-dlp",
         *build_common_yt_dlp_args(),
-        "--flat-playlist",
         "--dump-json",
         "--playlist-start",
         str(start),
@@ -1231,7 +1242,8 @@ def get_soundcloud_user_tracks_yt(user_url: str, limit: int, offset: int = 0) ->
     result = run_yt_dlp(cmd, timeout=timeout_sec)
     if result.returncode != 0:
         return []
-    return parse_search_results(result.stdout, include_covers=True)
+    tracks = parse_search_results(result.stdout, include_covers=True)
+    return [t for t in tracks if not is_soundcloud_set_url(t.get("url"))]
 
 
 def is_soundcloud_api_configured() -> bool:
