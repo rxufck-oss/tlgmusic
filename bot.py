@@ -624,11 +624,16 @@ def get_cached_artist_payload(query: str) -> dict | None:
     if time.time() - cached.get("created_at", 0) > SPOTIFY_ARTIST_CACHE_TTL:
         SPOTIFY_ARTIST_CACHE.pop(key, None)
         return None
-    return cached.get("payload")
+    payload = cached.get("payload")
+    if not payload or not payload.get("ok"):
+        return None
+    return payload
 
 
 def set_cached_artist_payload(query: str, payload: dict) -> None:
     if SPOTIFY_ARTIST_CACHE_TTL <= 0:
+        return
+    if not payload or not payload.get("ok"):
         return
     key = normalize_artist_name(query)
     SPOTIFY_ARTIST_CACHE[key] = {"payload": payload, "created_at": time.time()}
@@ -1531,13 +1536,9 @@ def start_http_api() -> None:
         if time.time() < SPOTIFY_RATE_LIMITED_UNTIL and (not artist or not albums_with_tracks):
             return jsonify({"ok": False, "error": "spotify rate limited"}), 429
         if not artist:
-            payload = {"ok": False, "error": "artist not found"}
-            set_cached_artist_payload(query, payload)
-            return jsonify(payload), 404
+            return jsonify({"ok": False, "error": "artist not found"}), 404
         if not albums_with_tracks:
-            payload = {"ok": False, "error": "artist catalog empty"}
-            set_cached_artist_payload(query, payload)
-            return jsonify(payload), 200
+            return jsonify({"ok": False, "error": "artist catalog empty"}), 200
         payload = {"ok": True, "artist": artist, "albums": albums_with_tracks}
         set_cached_artist_payload(query, payload)
         return jsonify(payload)
