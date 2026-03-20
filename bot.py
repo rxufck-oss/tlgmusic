@@ -263,6 +263,7 @@ def http_json_request(
     attempt = 0
     is_spotify = "api.spotify.com" in (url or "") or "accounts.spotify.com" in (url or "")
     global SPOTIFY_RATE_LIMITED_UNTIL
+    global SPOTIFY_LAST_REQUEST_AT
     while True:
         try:
             if is_spotify:
