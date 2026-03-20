@@ -826,7 +826,9 @@ def build_artist_catalog_from_search(query: str, limit: int = 50) -> list:
             break
         offset += 50
     if not results:
-        return []
+        results = search_soundcloud(query, max_limit, include_covers=False)
+        if not results:
+            return []
     albums_map = {}
     ql = normalize_artist_name(query)
     for track in results:
