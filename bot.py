@@ -1222,15 +1222,85 @@ def is_soundcloud_set_url(url: str | None) -> bool:
     return "/sets/" in url
 
 
-def get_soundcloud_user_tracks_yt(user_url: str, limit: int, offset: int = 0) -> list:
+def normalize_soundcloud_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    if url.startswith("http://") or url.startswith("https://"):
+        return url
+    if url.startswith("/"):
+        return f"https://soundcloud.com{url}"
+    return f"https://soundcloud.com/{url}"
+
+
+def extract_soundcloud_urls_from_flat(stdout: str) -> list[str]:
+    urls: list[str] = []
+    for line in stdout.strip().split("\n"):
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        url = (
+            data.get("webpage_url")
+            or data.get("original_url")
+            or data.get("url")
+            or data.get("webpage_url_basename")
+        )
+        norm = normalize_soundcloud_url(url)
+        if not norm:
+            continue
+        if is_soundcloud_set_url(norm):
+            continue
+        urls.append(norm)
+    # Dedupe preserving order
+    seen = set()
+    out = []
+    for u in urls:
+        if u in seen:
+            continue
+        seen.add(u)
+        out.append(u)
+    return out
+
+
+def dedupe_soundcloud_tracks(tracks: list[dict]) -> list[dict]:
+    def score(item: dict) -> int:
+        s = 0
+        if item.get("album_name"):
+            s += 2
+        if item.get("cover_url"):
+            s += 1
+        dur = item.get("duration")
+        if dur and dur != "?:??":
+            s += 1
+        if item.get("artist"):
+            s += 1
+        return s
+
+    ordered_keys: list[str] = []
+    best: dict[str, dict] = {}
+    for t in tracks:
+        key = str(t.get("id") or t.get("url") or f"{t.get('title')}|{t.get('artist')}")
+        if key not in best:
+            best[key] = t
+            ordered_keys.append(key)
+            continue
+        if score(t) > score(best[key]):
+            best[key] = t
+    return [best[k] for k in ordered_keys]
+
+
+def get_soundcloud_user_tracks_yt(user_url: str, limit: int, offset: int = 0) -> tuple[list, int]:
     safe_limit = max(1, min(limit, SC_ARTIST_TRACK_LIMIT))
     safe_offset = max(0, int(offset or 0))
     start = safe_offset + 1
     end = safe_offset + safe_limit
     timeout_sec = max(SC_SEARCH_TIMEOUT_SEC, 20 + safe_limit // 3)
-    cmd = [
+    flat_cmd = [
         "yt-dlp",
         *build_common_yt_dlp_args(),
+        "--flat-playlist",
         "--dump-json",
         "--playlist-start",
         str(start),
@@ -1239,11 +1309,28 @@ def get_soundcloud_user_tracks_yt(user_url: str, limit: int, offset: int = 0) ->
         "--skip-download",
         user_url,
     ]
-    result = run_yt_dlp(cmd, timeout=timeout_sec)
-    if result.returncode != 0:
-        return []
-    tracks = parse_search_results(result.stdout, include_covers=True)
-    return [t for t in tracks if not is_soundcloud_set_url(t.get("url"))]
+    flat_result = run_yt_dlp(flat_cmd, timeout=timeout_sec)
+    if flat_result.returncode != 0:
+        return [], 0
+    urls = extract_soundcloud_urls_from_flat(flat_result.stdout)
+    if not urls:
+        return [], 0
+
+    info_timeout = max(SC_SEARCH_TIMEOUT_SEC, 12 + len(urls) // 2)
+    info_cmd = [
+        "yt-dlp",
+        *build_common_yt_dlp_args(),
+        "--dump-json",
+        "--no-playlist",
+        "--skip-download",
+        *urls,
+    ]
+    info_result = run_yt_dlp(info_cmd, timeout=info_timeout)
+    if info_result.returncode != 0:
+        return [], len(urls)
+    tracks = parse_search_results(info_result.stdout, include_covers=True)
+    tracks = [t for t in tracks if not is_soundcloud_set_url(t.get("url"))]
+    return tracks, len(urls)
 
 
 def is_soundcloud_api_configured() -> bool:
@@ -1456,11 +1543,12 @@ def build_soundcloud_artist_catalog(query: str, offset: int = 0, limit: int | No
     safe_offset = max(0, int(offset or 0))
     safe_limit = max(1, min(int(limit or SC_ARTIST_TRACK_LIMIT), SC_ARTIST_TRACK_LIMIT))
 
+    page_count = 0
     if SC_USER_TRACK_SOURCE == "yt-dlp":
         user = search_soundcloud_user_yt(query)
         if user:
             user_url = user.get("permalink_url")
-            raw_tracks = get_soundcloud_user_tracks_yt(user_url, safe_limit, safe_offset)
+            raw_tracks, page_count = get_soundcloud_user_tracks_yt(user_url, safe_limit, safe_offset)
             for item in raw_tracks:
                 if item:
                     tracks.append(item)
@@ -1475,6 +1563,14 @@ def build_soundcloud_artist_catalog(query: str, offset: int = 0, limit: int | No
             mapped = map_soundcloud_track(item, default_artist=user.get("username"), default_cover=avatar)
             if mapped:
                 tracks.append(mapped)
+        page_count = len(tracks)
+
+    if tracks:
+        fallback_artist = (user.get("username") if user else None) or query
+        for item in tracks:
+            if not item.get("artist"):
+                item["artist"] = fallback_artist
+    tracks = dedupe_soundcloud_tracks(tracks)
 
     if tracks and is_spotify_configured() and not is_spotify_rate_limited():
         limit = max(0, min(SPOTIFY_ARTIST_META_LIMIT, len(tracks)))
@@ -1508,7 +1604,7 @@ def build_soundcloud_artist_catalog(query: str, offset: int = 0, limit: int | No
         "genres": [],
         "url": (user.get("permalink_url") or user_url or "") if user else (user_url or ""),
     }
-    next_offset = safe_offset + len(tracks) if len(tracks) >= safe_limit else None
+    next_offset = safe_offset + page_count if page_count >= safe_limit else None
     page_info = {"offset": safe_offset, "limit": safe_limit, "next_offset": next_offset, "has_more": bool(next_offset)}
     return artist, albums, page_info
 
