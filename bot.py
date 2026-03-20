@@ -564,12 +564,18 @@ def search_spotify(query: str, limit: int = 20, include_meta: bool = False, offs
     return [x for x in out if x.get("url")]
 
 
-def search_spotify_artist(query: str) -> dict | None:
+def normalize_artist_name(name: str) -> str:
+    name = (name or "").replace("$", "s").replace("&", "and")
+    return "".join(ch.lower() if ch.isalnum() else "" for ch in name)
+
+
+def search_spotify_artist_candidates(query: str, limit: int = 5) -> list:
     token = get_spotify_token()
     if not token or not query:
-        return None
+        return []
+    safe_limit = max(1, min(limit, 10))
     encoded_q = urllib.parse.quote(query)
-    url = f"https://api.spotify.com/v1/search?q={encoded_q}&type=artist&limit=1"
+    url = f"https://api.spotify.com/v1/search?q={encoded_q}&type=artist&limit={safe_limit}"
     payload = http_json_request(
         url,
         headers={
@@ -580,18 +586,40 @@ def search_spotify_artist(query: str) -> dict | None:
         proxy=SPOTIFY_PROXY or None,
     )
     items = (((payload or {}).get("artists") or {}).get("items")) or []
-    if not items:
+    out = []
+    for artist in items:
+        images = artist.get("images") or []
+        out.append(
+            {
+                "id": artist.get("id"),
+                "name": artist.get("name"),
+                "image": images[0].get("url") if images else None,
+                "followers": (artist.get("followers") or {}).get("total"),
+                "genres": artist.get("genres") or [],
+                "url": ((artist.get("external_urls") or {}).get("spotify") or ""),
+            }
+        )
+    return out
+
+
+def search_spotify_artist(query: str) -> dict | None:
+    if not query:
         return None
-    artist = items[0]
-    images = artist.get("images") or []
-    return {
-        "id": artist.get("id"),
-        "name": artist.get("name"),
-        "image": images[0].get("url") if images else None,
-        "followers": (artist.get("followers") or {}).get("total"),
-        "genres": artist.get("genres") or [],
-        "url": ((artist.get("external_urls") or {}).get("spotify") or ""),
-    }
+    candidates = search_spotify_artist_candidates(query, limit=8)
+    if not candidates:
+        alt = query.replace("ASAP", "A$AP").replace("A$AP", "A$AP").strip()
+        if alt and alt.lower() != query.lower():
+            candidates = search_spotify_artist_candidates(alt, limit=8)
+    if not candidates:
+        return None
+    qn = normalize_artist_name(query)
+    for artist in candidates:
+        if qn and qn == normalize_artist_name(artist.get("name", "")):
+            return artist
+    for artist in candidates:
+        if qn and qn in normalize_artist_name(artist.get("name", "")):
+            return artist
+    return candidates[0]
 
 
 def get_spotify_artist_albums(artist_id: str, limit: int = 20) -> list:
@@ -649,19 +677,48 @@ def get_spotify_album_tracks(album_id: str) -> list:
         artists = it.get("artists") or []
         artist = ", ".join([a.get("name", "") for a in artists if a.get("name")]).strip() or "Unknown Artist"
         duration_ms = int(it.get("duration_ms") or 0)
+        duration_sec = duration_ms / 1000 if duration_ms else 0
+        if MIN_TRACK_DURATION_SEC and duration_sec and duration_sec < MIN_TRACK_DURATION_SEC:
+            continue
         mins = duration_ms // 60000
         secs = (duration_ms % 60000) // 1000
+        external_urls = it.get("external_urls") or {}
+        url = external_urls.get("spotify") or (f"https://open.spotify.com/track/{it.get('id')}" if it.get("id") else "")
         tracks.append(
             {
                 "id": it.get("id"),
                 "title": it.get("name", "Без названия"),
                 "artist": artist,
                 "duration": f"{mins}:{secs:02d}" if duration_ms else "?:??",
-                "url": ((it.get("external_urls") or {}).get("spotify") or ""),
+                "url": url,
                 "source": "spotify",
             }
         )
     return tracks
+
+
+def build_artist_catalog_from_artist(artist_id: str) -> list:
+    if not artist_id:
+        return []
+    albums = get_spotify_artist_albums(artist_id, limit=SPOTIFY_ARTIST_ALBUM_LIMIT)
+    if not albums:
+        return []
+    out = []
+    for album in albums:
+        album_id = album.get("id")
+        tracks = get_spotify_album_tracks(album_id) if album_id else []
+        if not tracks:
+            continue
+        out.append(
+            {
+                "id": album_id,
+                "name": album.get("name") or "Альбом",
+                "release_date": album.get("release_date"),
+                "cover_url": album.get("cover_url"),
+                "tracks": tracks,
+            }
+        )
+    return out
 
 
 def build_artist_catalog_from_search(query: str, limit: int = 50) -> list:
@@ -681,14 +738,9 @@ def build_artist_catalog_from_search(query: str, limit: int = 50) -> list:
     if not results:
         return []
     albums_map = {}
-    def norm(s: str) -> str:
-        s = (s or "").replace("$", "s").replace("&", "and")
-        cleaned = "".join(ch.lower() if ch.isalnum() else "" for ch in s)
-        return cleaned
-
-    ql = norm(query)
+    ql = normalize_artist_name(query)
     for track in results:
-        artist_name = norm(track.get("artist") or "")
+        artist_name = normalize_artist_name(track.get("artist") or "")
         if ql and ql not in artist_name:
             continue
         if not track.get("album_id") or not track.get("album_name"):
@@ -1386,7 +1438,11 @@ def start_http_api() -> None:
         if not query:
             return jsonify({"ok": False, "error": "query is required"}), 400
         artist = search_spotify_artist(query)
-        albums_with_tracks = build_artist_catalog_from_search(query, limit=50)
+        albums_with_tracks = []
+        if artist and artist.get("id"):
+            albums_with_tracks = build_artist_catalog_from_artist(artist.get("id"))
+        if not albums_with_tracks:
+            albums_with_tracks = build_artist_catalog_from_search(query, limit=50)
         if not artist and albums_with_tracks:
             artist = {
                 "id": None,
