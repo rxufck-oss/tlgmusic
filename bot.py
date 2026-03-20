@@ -81,7 +81,7 @@ SPOTIFY_PROXY = os.getenv("SPOTIFY_PROXY", "").strip()
 SPOTIFY_ARTIST_CACHE_TTL = int(os.getenv("SPOTIFY_ARTIST_CACHE_TTL", "900"))
 SPOTIFY_ALBUM_TRACKS_CACHE_TTL = int(os.getenv("SPOTIFY_ALBUM_TRACKS_CACHE_TTL", "21600"))
 SPOTIFY_TRACK_META_CACHE_TTL = int(os.getenv("SPOTIFY_TRACK_META_CACHE_TTL", "86400"))
-SPOTIFY_ARTIST_META_LIMIT = int(os.getenv("SPOTIFY_ARTIST_META_LIMIT", "100"))
+SPOTIFY_ARTIST_META_LIMIT = int(os.getenv("SPOTIFY_ARTIST_META_LIMIT", "20"))
 SPOTIFY_MIN_INTERVAL_MS = int(os.getenv("SPOTIFY_MIN_INTERVAL_MS", "150"))
 SPOTIFY_MAX_CONCURRENCY = int(os.getenv("SPOTIFY_MAX_CONCURRENCY", "1"))
 SC_CLIENT_ID = os.getenv("SC_CLIENT_ID", "").strip()
@@ -333,6 +333,10 @@ def http_json_request(
 
 def is_spotify_configured() -> bool:
     return bool(SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET)
+
+
+def is_spotify_rate_limited() -> bool:
+    return time.time() < SPOTIFY_RATE_LIMITED_UNTIL
 
 
 def get_spotify_token() -> str | None:
@@ -1047,6 +1051,8 @@ def spotify_lookup_track(title: str, artist: str | None = None) -> dict | None:
     token = get_spotify_token()
     if not token:
         return None
+    if is_spotify_rate_limited():
+        return None
 
     query = f"{artist or ''} {title or ''}".strip()
     if not query:
@@ -1066,6 +1072,8 @@ def spotify_lookup_track(title: str, artist: str | None = None) -> dict | None:
             "User-Agent": "Mozilla/5.0",
         },
         proxy=SPOTIFY_PROXY or None,
+        timeout=10,
+        max_retries=0,
     )
     if not payload:
         return None
@@ -1456,11 +1464,13 @@ def build_soundcloud_artist_catalog(query: str, offset: int = 0, limit: int | No
             if mapped:
                 tracks.append(mapped)
 
-    if tracks and is_spotify_configured():
+    if tracks and is_spotify_configured() and not is_spotify_rate_limited():
         limit = max(0, min(SPOTIFY_ARTIST_META_LIMIT, len(tracks)))
         for idx, item in enumerate(tracks):
             if limit and idx >= limit:
                 continue
+            if is_spotify_rate_limited():
+                break
             meta = spotify_lookup_track(item.get("title", ""), item.get("artist"))
             if meta:
                 item.update(
