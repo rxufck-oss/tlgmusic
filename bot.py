@@ -671,17 +671,18 @@ def search_spotify(
     safe_offset = max(0, min(offset, 1000))
     encoded_q = urllib.parse.quote(query)
 
-    def build_url(lim: int, off: int) -> str:
-        base = (
-            f"https://api.spotify.com/v1/search?q={encoded_q}&type=track&limit={lim}"
-            f"&offset={off}"
-        )
-        if market:
-            base += f"&market={urllib.parse.quote(market)}"
+    def build_url(lim: int | None, off: int, mk: str | None) -> str:
+        base = f"https://api.spotify.com/v1/search?q={encoded_q}&type=track"
+        if lim is not None:
+            base += f"&limit={lim}"
+        if off:
+            base += f"&offset={off}"
+        if mk:
+            base += f"&market={urllib.parse.quote(mk)}"
         return base
 
-    def fetch_payload(lim: int, off: int) -> tuple[dict | None, bool]:
-        url = build_url(lim, off)
+    def fetch_payload(lim: int | None, off: int, mk: str | None) -> tuple[dict | None, bool]:
+        url = build_url(lim, off, mk)
         payload = http_json_request(
             url,
             headers={
@@ -693,10 +694,11 @@ def search_spotify(
         )
         if payload:
             return payload, False
-        invalid = (
-            (SPOTIFY_LAST_ERROR_URL or "") == url
-            and "Invalid limit" in (SPOTIFY_LAST_ERROR_MSG or "")
-        )
+        invalid = False
+        if "Invalid limit" in (SPOTIFY_LAST_ERROR_MSG or ""):
+            url_hint = SPOTIFY_LAST_ERROR_URL or ""
+            if "/v1/search" in url_hint:
+                invalid = True
         return None, invalid
 
     def map_items(items: list) -> list:
@@ -738,12 +740,14 @@ def search_spotify(
             out.append(item)
         return out
 
-    payload, invalid = fetch_payload(safe_limit, safe_offset)
-    if not payload and invalid and safe_limit > 1:
+    payload, invalid = fetch_payload(safe_limit, safe_offset, market)
+    if not payload and invalid:
         page_limit = min(10, safe_limit)
         results: list[dict] = []
         while len(results) < safe_limit:
-            payload, _ = fetch_payload(page_limit, safe_offset)
+            payload, invalid_page = fetch_payload(page_limit, safe_offset, None)
+            if not payload and invalid_page:
+                payload, _ = fetch_payload(None, safe_offset, None)
             if not payload:
                 break
             items = (((payload.get("tracks") or {}).get("items")) or [])
