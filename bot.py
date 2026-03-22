@@ -330,6 +330,27 @@ def http_json_request(
                 raw = resp.read().decode("utf-8", errors="ignore")
                 return json.loads(raw)
         except urllib.error.HTTPError as e:
+            error_body = ""
+            try:
+                error_body = e.read().decode("utf-8", errors="ignore")
+            except Exception:
+                error_body = ""
+            error_message = ""
+            if error_body:
+                try:
+                    parsed = json.loads(error_body)
+                    if isinstance(parsed, dict):
+                        err = parsed.get("error") or {}
+                        if isinstance(err, dict):
+                            error_message = str(err.get("message") or "").strip()
+                        elif isinstance(err, str):
+                            error_message = err.strip()
+                        if not error_message:
+                            error_message = parsed.get("message") or ""
+                    elif isinstance(parsed, list):
+                        error_message = " ".join([str(x) for x in parsed if x])
+                except Exception:
+                    error_message = error_body.strip()
             if e.code == 429 and attempt < max_retries:
                 retry_after = 0
                 try:
@@ -342,10 +363,13 @@ def http_json_request(
                 time.sleep(min(delay, 10))
                 attempt += 1
                 continue
-            logger.error("HTTP JSON request failed (%s): %s", url, e)
+            if error_message:
+                logger.error("HTTP JSON request failed (%s): %s (%s)", url, e, error_message)
+            else:
+                logger.error("HTTP JSON request failed (%s): %s", url, e)
             if is_spotify:
                 SPOTIFY_LAST_ERROR_TS = time.time()
-                SPOTIFY_LAST_ERROR_MSG = f"HTTP {e.code}"
+                SPOTIFY_LAST_ERROR_MSG = f"HTTP {e.code}" + (f": {error_message}" if error_message else "")
             return None
         except Exception as e:
             logger.error("HTTP JSON request failed (%s): %s", url, e)
