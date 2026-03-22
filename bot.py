@@ -58,6 +58,7 @@ SEARCH_CACHE_MAX_ITEMS = int(os.getenv("SEARCH_CACHE_MAX_ITEMS", "200"))
 NEW_RELEASES_CACHE_TTL = int(os.getenv("NEW_RELEASES_CACHE_TTL", "600"))
 WEBAPP_STATIC_DIR = os.getenv("WEBAPP_STATIC_DIR", "").strip()
 SPOTIFY_META_LIMIT = int(os.getenv("SPOTIFY_META_LIMIT", "10"))
+SPOTIFY_SEARCH_LIMIT = int(os.getenv("SPOTIFY_SEARCH_LIMIT", "20"))
 SPOTIFY_ARTIST_ALBUM_LIMIT = int(os.getenv("SPOTIFY_ARTIST_ALBUM_LIMIT", "200"))
 SPOTIFY_ARTIST_INCLUDE_GROUPS = os.getenv(
     "SPOTIFY_ARTIST_INCLUDE_GROUPS",
@@ -664,7 +665,8 @@ def search_spotify(
     if not token:
         return []
 
-    safe_limit = max(1, min(limit, 50))
+    max_limit = max(1, SPOTIFY_SEARCH_LIMIT)
+    safe_limit = max(1, min(limit, max_limit))
     safe_offset = max(0, min(offset, 1000))
     encoded_q = urllib.parse.quote(query)
     url = (
@@ -2067,7 +2069,7 @@ def search_music(
         if artist_mode:
             target_limit = max(target_limit, ARTIST_SEARCH_RESULTS)
         if source == "spotify":
-            target_limit = min(target_limit, 50)
+            target_limit = min(target_limit, SPOTIFY_SEARCH_LIMIT)
         source = (source or "spotify").strip().lower()
 
         if "soundcloud.com/" in query and source != "spotify":
@@ -2475,7 +2477,7 @@ def start_http_api() -> None:
         source = str(payload.get("source") or "spotify").strip().lower()
         user_id = str(payload.get("userId") or payload.get("user_id") or "").strip() or None
         if source == "spotify":
-            requested_limit = max(1, min(requested_limit, 50))
+            requested_limit = max(1, min(requested_limit, SPOTIFY_SEARCH_LIMIT))
         elif artist_mode:
             requested_limit = max(10, min(requested_limit, 200))
         else:
