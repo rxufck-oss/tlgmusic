@@ -2066,6 +2066,8 @@ def search_music(
         target_limit = max(1, min(limit or MAX_SEARCH_RESULTS, 200))
         if artist_mode:
             target_limit = max(target_limit, ARTIST_SEARCH_RESULTS)
+        if source == "spotify":
+            target_limit = min(target_limit, 50)
         source = (source or "spotify").strip().lower()
 
         if "soundcloud.com/" in query and source != "spotify":
@@ -2472,7 +2474,9 @@ def start_http_api() -> None:
         include_meta = bool(payload.get("includeMeta", False))
         source = str(payload.get("source") or "spotify").strip().lower()
         user_id = str(payload.get("userId") or payload.get("user_id") or "").strip() or None
-        if artist_mode:
+        if source == "spotify":
+            requested_limit = max(1, min(requested_limit, 50))
+        elif artist_mode:
             requested_limit = max(10, min(requested_limit, 200))
         else:
             requested_limit = max(5, min(requested_limit, 60))
