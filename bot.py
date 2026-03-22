@@ -88,6 +88,8 @@ SC_CLIENT_ID = os.getenv("SC_CLIENT_ID", "").strip()
 SC_API_TIMEOUT_SEC = int(os.getenv("SC_API_TIMEOUT_SEC", "12"))
 SC_ARTIST_TRACK_LIMIT = int(os.getenv("SC_ARTIST_TRACK_LIMIT", "600"))
 SC_ARTIST_PAGE_SIZE = int(os.getenv("SC_ARTIST_PAGE_SIZE", "200"))
+SC_SET_TRACK_LIMIT = int(os.getenv("SC_SET_TRACK_LIMIT", "200"))
+SC_SET_MAX_PER_PAGE = int(os.getenv("SC_SET_MAX_PER_PAGE", "4"))
 SC_USER_TRACK_SOURCE = os.getenv("SC_USER_TRACK_SOURCE", "yt-dlp").strip().lower()
 MAX_TRACK_DURATION_SEC = int(os.getenv("MAX_TRACK_DURATION_SEC", "0"))
 MIN_TRACK_DURATION_SEC = int(os.getenv("MIN_TRACK_DURATION_SEC", "0"))
@@ -1232,8 +1234,9 @@ def normalize_soundcloud_url(url: str | None) -> str | None:
     return f"https://soundcloud.com/{url}"
 
 
-def extract_soundcloud_urls_from_flat(stdout: str) -> list[str]:
-    urls: list[str] = []
+def extract_soundcloud_entries_from_flat(stdout: str) -> tuple[list[str], list[dict]]:
+    track_urls: list[str] = []
+    set_items: list[dict] = []
     for line in stdout.strip().split("\n"):
         if not line:
             continue
@@ -1251,8 +1254,72 @@ def extract_soundcloud_urls_from_flat(stdout: str) -> list[str]:
         if not norm:
             continue
         if is_soundcloud_set_url(norm):
+            set_items.append(
+                {
+                    "url": norm,
+                    "title": data.get("title"),
+                    "cover_url": data.get("thumbnail") or data.get("artwork_url"),
+                }
+            )
+        else:
+            track_urls.append(norm)
+
+    def dedupe_urls(urls: list[str]) -> list[str]:
+        seen = set()
+        out = []
+        for u in urls:
+            if u in seen:
+                continue
+            seen.add(u)
+            out.append(u)
+        return out
+
+    track_urls = dedupe_urls(track_urls)
+    # Dedupe sets by URL
+    set_map: dict[str, dict] = {}
+    for item in set_items:
+        if not item.get("url"):
             continue
-        urls.append(norm)
+        if item["url"] not in set_map:
+            set_map[item["url"]] = item
+    return track_urls, list(set_map.values())
+
+
+def extract_soundcloud_track_urls(stdout: str) -> list[str]:
+    track_urls, _ = extract_soundcloud_entries_from_flat(stdout)
+    return track_urls
+
+
+def expand_soundcloud_sets(set_items: list[dict]) -> tuple[list[str], dict]:
+    if not set_items:
+        return [], {}
+    urls: list[str] = []
+    meta_by_url: dict[str, dict] = {}
+    for item in set_items[:SC_SET_MAX_PER_PAGE]:
+        set_url = item.get("url")
+        if not set_url:
+            continue
+        set_cover = normalize_sc_cover(item.get("cover_url"))
+        set_title = item.get("title") or "Без альбома"
+        cmd = [
+            "yt-dlp",
+            *build_common_yt_dlp_args(),
+            "--flat-playlist",
+            "--dump-json",
+            "--playlist-end",
+            str(max(1, SC_SET_TRACK_LIMIT)),
+            "--skip-download",
+            set_url,
+        ]
+        result = run_yt_dlp(cmd, timeout=max(SC_SEARCH_TIMEOUT_SEC, 10 + SC_SET_TRACK_LIMIT // 3))
+        if result.returncode != 0:
+            continue
+        set_urls = extract_soundcloud_track_urls(result.stdout)
+        for u in set_urls:
+            if u not in meta_by_url:
+                meta_by_url[u] = {"album_name": set_title, "cover_url": set_cover}
+            urls.append(u)
+
     # Dedupe preserving order
     seen = set()
     out = []
@@ -1261,7 +1328,7 @@ def extract_soundcloud_urls_from_flat(stdout: str) -> list[str]:
             continue
         seen.add(u)
         out.append(u)
-    return out
+    return out, meta_by_url
 
 
 def dedupe_soundcloud_tracks(tracks: list[dict]) -> list[dict]:
@@ -1312,7 +1379,9 @@ def get_soundcloud_user_tracks_yt(user_url: str, limit: int, offset: int = 0) ->
     flat_result = run_yt_dlp(flat_cmd, timeout=timeout_sec)
     if flat_result.returncode != 0:
         return [], 0
-    urls = extract_soundcloud_urls_from_flat(flat_result.stdout)
+    track_urls, set_items = extract_soundcloud_entries_from_flat(flat_result.stdout)
+    set_urls, set_meta_by_url = expand_soundcloud_sets(set_items)
+    urls = track_urls + set_urls
     if not urls:
         return [], 0
 
@@ -1327,10 +1396,18 @@ def get_soundcloud_user_tracks_yt(user_url: str, limit: int, offset: int = 0) ->
     ]
     info_result = run_yt_dlp(info_cmd, timeout=info_timeout)
     if info_result.returncode != 0:
-        return [], len(urls)
+        return [], len(track_urls) + len(set_items)
     tracks = parse_search_results(info_result.stdout, include_covers=True)
     tracks = [t for t in tracks if not is_soundcloud_set_url(t.get("url"))]
-    return tracks, len(urls)
+    for t in tracks:
+        meta = set_meta_by_url.get(t.get("url") or "")
+        if not meta:
+            continue
+        if not t.get("album_name"):
+            t["album_name"] = meta.get("album_name")
+        if not t.get("cover_url"):
+            t["cover_url"] = meta.get("cover_url")
+    return tracks, len(track_urls) + len(set_items)
 
 
 def is_soundcloud_api_configured() -> bool:
