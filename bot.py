@@ -58,7 +58,9 @@ SEARCH_CACHE_MAX_ITEMS = int(os.getenv("SEARCH_CACHE_MAX_ITEMS", "200"))
 NEW_RELEASES_CACHE_TTL = int(os.getenv("NEW_RELEASES_CACHE_TTL", "600"))
 WEBAPP_STATIC_DIR = os.getenv("WEBAPP_STATIC_DIR", "").strip()
 SPOTIFY_META_LIMIT = int(os.getenv("SPOTIFY_META_LIMIT", "10"))
-SPOTIFY_SEARCH_LIMIT = min(int(os.getenv("SPOTIFY_SEARCH_LIMIT", "20")), 20)
+_spotify_search_limit_raw = int(os.getenv("SPOTIFY_SEARCH_LIMIT", "100"))
+SPOTIFY_SEARCH_LIMIT = max(20, min(_spotify_search_limit_raw, 200))
+SPOTIFY_SEARCH_PAGE_SIZE = int(os.getenv("SPOTIFY_SEARCH_PAGE_SIZE", "20"))
 SPOTIFY_SEARCH_USE_LIMIT = os.getenv("SPOTIFY_SEARCH_USE_LIMIT", "0").strip() == "1"
 SPOTIFY_ARTIST_ALBUM_LIMIT = int(os.getenv("SPOTIFY_ARTIST_ALBUM_LIMIT", "200"))
 SPOTIFY_ARTIST_INCLUDE_GROUPS = os.getenv(
@@ -743,8 +745,27 @@ def search_spotify(
             out.append(item)
         return out
 
+    if not SPOTIFY_SEARCH_USE_LIMIT:
+        results: list[dict] = []
+        page_size = max(1, min(SPOTIFY_SEARCH_PAGE_SIZE, 50))
+        current_offset = safe_offset
+        while len(results) < safe_limit:
+            payload, invalid = fetch_payload(None, current_offset, market)
+            if not payload and invalid:
+                payload, _ = fetch_payload(None, current_offset, None)
+            if not payload:
+                break
+            items = (((payload.get("tracks") or {}).get("items")) or [])
+            results.extend(map_items(items))
+            if len(items) < page_size:
+                break
+            current_offset += page_size
+            if current_offset >= 1000:
+                break
+        return [x for x in results if x.get("url")][:safe_limit]
+
     payload, invalid = fetch_payload(safe_limit, safe_offset, market)
-    if not payload and invalid and SPOTIFY_SEARCH_USE_LIMIT:
+    if not payload and invalid:
         payload, _ = fetch_payload(None, safe_offset, market)
 
     if not payload:
