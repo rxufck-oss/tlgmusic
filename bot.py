@@ -660,6 +660,7 @@ def search_spotify(
     include_meta: bool = False,
     offset: int = 0,
     token: str | None = None,
+    market: str | None = None,
 ) -> list:
     token = token or get_spotify_token()
     if not token:
@@ -669,59 +670,94 @@ def search_spotify(
     safe_limit = max(1, min(limit, max_limit))
     safe_offset = max(0, min(offset, 1000))
     encoded_q = urllib.parse.quote(query)
-    url = (
-        f"https://api.spotify.com/v1/search?q={encoded_q}&type=track&limit={safe_limit}"
-        f"&offset={safe_offset}"
-    )
-    payload = http_json_request(
-        url,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json",
-            "User-Agent": "Mozilla/5.0",
-        },
-        proxy=SPOTIFY_PROXY or None,
-    )
+
+    def build_url(lim: int, off: int) -> str:
+        base = (
+            f"https://api.spotify.com/v1/search?q={encoded_q}&type=track&limit={lim}"
+            f"&offset={off}"
+        )
+        if market:
+            base += f"&market={urllib.parse.quote(market)}"
+        return base
+
+    def fetch_payload(lim: int, off: int) -> tuple[dict | None, bool]:
+        url = build_url(lim, off)
+        payload = http_json_request(
+            url,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0",
+            },
+            proxy=SPOTIFY_PROXY or None,
+        )
+        if payload:
+            return payload, False
+        invalid = (
+            (SPOTIFY_LAST_ERROR_URL or "") == url
+            and "Invalid limit" in (SPOTIFY_LAST_ERROR_MSG or "")
+        )
+        return None, invalid
+
+    def map_items(items: list) -> list:
+        out = []
+        for it in items:
+            artists = it.get("artists") or []
+            artist = ", ".join([a.get("name", "") for a in artists if a.get("name")]).strip() or "Unknown Artist"
+            artist_ids = [a.get("id") for a in artists if a.get("id")]
+            images = (it.get("album") or {}).get("images") or []
+            cover = images[0].get("url") if images else None
+            duration_ms = int(it.get("duration_ms") or 0)
+            mins = duration_ms // 60000
+            secs = (duration_ms % 60000) // 1000
+            item = {
+                "id": it.get("id"),
+                "spotify_id": it.get("id"),
+                "title": it.get("name", "Без названия"),
+                "artist": artist,
+                "duration": f"{mins}:{secs:02d}" if duration_ms else "?:??",
+                "url": ((it.get("external_urls") or {}).get("spotify") or ""),
+                "cover_url": cover,
+                "source": "spotify",
+                "artist_ids": artist_ids,
+            }
+            if include_meta:
+                album = it.get("album") or {}
+                external_ids = it.get("external_ids") or {}
+                item.update(
+                    {
+                        "album_name": album.get("name"),
+                        "album_id": album.get("id"),
+                        "release_date": album.get("release_date"),
+                        "popularity": it.get("popularity"),
+                        "explicit": it.get("explicit"),
+                        "preview_url": it.get("preview_url"),
+                        "isrc": external_ids.get("isrc"),
+                    }
+                )
+            out.append(item)
+        return out
+
+    payload, invalid = fetch_payload(safe_limit, safe_offset)
+    if not payload and invalid and safe_limit > 1:
+        page_limit = min(10, safe_limit)
+        results: list[dict] = []
+        while len(results) < safe_limit:
+            payload, _ = fetch_payload(page_limit, safe_offset)
+            if not payload:
+                break
+            items = (((payload.get("tracks") or {}).get("items")) or [])
+            results.extend(map_items(items))
+            if len(items) < page_limit:
+                break
+            safe_offset += page_limit
+        return [x for x in results if x.get("url")][:safe_limit]
+
     if not payload:
         return []
 
     items = (((payload.get("tracks") or {}).get("items")) or [])
-    out = []
-    for it in items:
-        artists = it.get("artists") or []
-        artist = ", ".join([a.get("name", "") for a in artists if a.get("name")]).strip() or "Unknown Artist"
-        artist_ids = [a.get("id") for a in artists if a.get("id")]
-        images = (it.get("album") or {}).get("images") or []
-        cover = images[0].get("url") if images else None
-        duration_ms = int(it.get("duration_ms") or 0)
-        mins = duration_ms // 60000
-        secs = (duration_ms % 60000) // 1000
-        item = {
-            "id": it.get("id"),
-            "spotify_id": it.get("id"),
-            "title": it.get("name", "Без названия"),
-            "artist": artist,
-            "duration": f"{mins}:{secs:02d}" if duration_ms else "?:??",
-            "url": ((it.get("external_urls") or {}).get("spotify") or ""),
-            "cover_url": cover,
-            "source": "spotify",
-            "artist_ids": artist_ids,
-        }
-        if include_meta:
-            album = it.get("album") or {}
-            external_ids = it.get("external_ids") or {}
-            item.update(
-                {
-                    "album_name": album.get("name"),
-                    "album_id": album.get("id"),
-                    "release_date": album.get("release_date"),
-                    "popularity": it.get("popularity"),
-                    "explicit": it.get("explicit"),
-                    "preview_url": it.get("preview_url"),
-                    "isrc": external_ids.get("isrc"),
-                }
-            )
-        out.append(item)
+    out = map_items(items)
     return [x for x in out if x.get("url")]
 
 
@@ -848,6 +884,7 @@ def get_spotify_artist_tracks_by_search(
     artist_id: str | None = None,
     limit: int | None = None,
     token: str | None = None,
+    market: str | None = None,
 ) -> list:
     if not artist_name:
         return []
@@ -857,7 +894,14 @@ def get_spotify_artist_tracks_by_search(
     query = f'artist:"{artist_name}"'
     while offset < max_limit:
         page_size = min(SPOTIFY_SEARCH_LIMIT, 50, max_limit - offset)
-        batch_raw = search_spotify(query, limit=page_size, include_meta=True, offset=offset, token=token)
+        batch_raw = search_spotify(
+            query,
+            limit=page_size,
+            include_meta=True,
+            offset=offset,
+            token=token,
+            market=market,
+        )
         if not batch_raw:
             break
         batch = batch_raw
@@ -1037,12 +1081,12 @@ def get_spotify_album_tracks(
 
 
 def build_artist_catalog_from_artist(
-    artist_id: str, artist_name: str | None = None, token: str | None = None
+    artist_id: str, artist_name: str | None = None, token: str | None = None, market: str | None = None
 ) -> list:
     if not artist_id:
         return []
     tracks = get_spotify_artist_tracks_by_search(
-        artist_name or "", artist_id, SPOTIFY_ARTIST_TRACK_LIMIT, token=token
+        artist_name or "", artist_id, SPOTIFY_ARTIST_TRACK_LIMIT, token=token, market=market
     )
     albums_from_tracks = group_tracks_by_album(tracks)
     if not SPOTIFY_ARTIST_EXPAND_ALBUMS:
@@ -1080,7 +1124,9 @@ def build_artist_catalog_from_artist(
     return out or albums_from_tracks
 
 
-def build_artist_catalog_from_search(query: str, limit: int = 50, token: str | None = None) -> list:
+def build_artist_catalog_from_search(
+    query: str, limit: int = 50, token: str | None = None, market: str | None = None
+) -> list:
     if not query:
         return []
     max_limit = max(20, min(limit, SPOTIFY_ARTIST_TRACK_LIMIT))
@@ -1094,6 +1140,7 @@ def build_artist_catalog_from_search(query: str, limit: int = 50, token: str | N
             include_meta=True,
             offset=offset,
             token=token,
+            market=market,
         )
         if not batch:
             break
@@ -1359,12 +1406,24 @@ def get_spotify_request_token(user_id: str | None = None) -> str | None:
     return get_spotify_token()
 
 
-def build_spotify_artist_catalog(query: str, token: str | None = None) -> tuple[dict | None, list]:
+def build_spotify_artist_catalog(
+    query: str, token: str | None = None, market: str | None = None
+) -> tuple[dict | None, list]:
     artist = search_spotify_artist(query, token=token)
     if artist:
-        albums = build_artist_catalog_from_artist(artist.get("id"), artist.get("name"), token=token)
+        albums = build_artist_catalog_from_artist(
+            artist.get("id"),
+            artist.get("name"),
+            token=token,
+            market=market,
+        )
         return artist, albums
-    albums = build_artist_catalog_from_search(query, limit=SPOTIFY_ARTIST_TRACK_LIMIT, token=token)
+    albums = build_artist_catalog_from_search(
+        query,
+        limit=SPOTIFY_ARTIST_TRACK_LIMIT,
+        token=token,
+        market=market,
+    )
     if albums:
         fallback_artist = {
             "id": None,
@@ -2101,12 +2160,14 @@ def search_music(
             if not token:
                 return [], "Spotify не настроен"
             spotify_query = f'artist:"{query}"' if artist_mode else query
+            market = "from_token" if user_id else None
             videos = search_spotify(
                 spotify_query,
                 target_limit,
                 include_meta=True,
                 offset=offset,
                 token=token,
+                market=market,
             )
             if videos:
                 set_search_cache(cache_key, videos)
@@ -2525,7 +2586,10 @@ def start_http_api() -> None:
             token = token or get_spotify_token()
             if not token:
                 return jsonify({"ok": False, "error": "Spotify не настроен"}), 400
-            artist, albums_with_tracks = build_spotify_artist_catalog(query, token=token)
+            market = "from_token" if user_id else None
+            artist, albums_with_tracks = build_spotify_artist_catalog(
+                query, token=token, market=market
+            )
             if not artist:
                 return jsonify({"ok": False, "error": "artist not found"}), 404
             if not albums_with_tracks:
