@@ -59,6 +59,7 @@ NEW_RELEASES_CACHE_TTL = int(os.getenv("NEW_RELEASES_CACHE_TTL", "600"))
 WEBAPP_STATIC_DIR = os.getenv("WEBAPP_STATIC_DIR", "").strip()
 SPOTIFY_META_LIMIT = int(os.getenv("SPOTIFY_META_LIMIT", "10"))
 SPOTIFY_SEARCH_LIMIT = min(int(os.getenv("SPOTIFY_SEARCH_LIMIT", "20")), 20)
+SPOTIFY_SEARCH_USE_LIMIT = os.getenv("SPOTIFY_SEARCH_USE_LIMIT", "0").strip() == "1"
 SPOTIFY_ARTIST_ALBUM_LIMIT = int(os.getenv("SPOTIFY_ARTIST_ALBUM_LIMIT", "200"))
 SPOTIFY_ARTIST_INCLUDE_GROUPS = os.getenv(
     "SPOTIFY_ARTIST_INCLUDE_GROUPS",
@@ -673,7 +674,7 @@ def search_spotify(
 
     def build_url(lim: int | None, off: int, mk: str | None) -> str:
         base = f"https://api.spotify.com/v1/search?q={encoded_q}&type=track"
-        if lim is not None:
+        if SPOTIFY_SEARCH_USE_LIMIT and lim is not None:
             base += f"&limit={lim}"
         if off:
             base += f"&offset={off}"
@@ -743,27 +744,14 @@ def search_spotify(
         return out
 
     payload, invalid = fetch_payload(safe_limit, safe_offset, market)
-    if not payload and invalid:
-        page_limit = min(10, safe_limit)
-        results: list[dict] = []
-        while len(results) < safe_limit:
-            payload, invalid_page = fetch_payload(page_limit, safe_offset, None)
-            if not payload and invalid_page:
-                payload, _ = fetch_payload(None, safe_offset, None)
-            if not payload:
-                break
-            items = (((payload.get("tracks") or {}).get("items")) or [])
-            results.extend(map_items(items))
-            if len(items) < page_limit:
-                break
-            safe_offset += page_limit
-        return [x for x in results if x.get("url")][:safe_limit]
+    if not payload and invalid and SPOTIFY_SEARCH_USE_LIMIT:
+        payload, _ = fetch_payload(None, safe_offset, market)
 
     if not payload:
         return []
 
     items = (((payload.get("tracks") or {}).get("items")) or [])
-    out = map_items(items)
+    out = map_items(items)[:safe_limit]
     return [x for x in out if x.get("url")]
 
 
