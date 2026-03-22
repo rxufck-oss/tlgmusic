@@ -58,7 +58,7 @@ SEARCH_CACHE_MAX_ITEMS = int(os.getenv("SEARCH_CACHE_MAX_ITEMS", "200"))
 NEW_RELEASES_CACHE_TTL = int(os.getenv("NEW_RELEASES_CACHE_TTL", "600"))
 WEBAPP_STATIC_DIR = os.getenv("WEBAPP_STATIC_DIR", "").strip()
 SPOTIFY_META_LIMIT = int(os.getenv("SPOTIFY_META_LIMIT", "10"))
-SPOTIFY_SEARCH_LIMIT = int(os.getenv("SPOTIFY_SEARCH_LIMIT", "20"))
+SPOTIFY_SEARCH_LIMIT = min(int(os.getenv("SPOTIFY_SEARCH_LIMIT", "20")), 20)
 SPOTIFY_ARTIST_ALBUM_LIMIT = int(os.getenv("SPOTIFY_ARTIST_ALBUM_LIMIT", "200"))
 SPOTIFY_ARTIST_INCLUDE_GROUPS = os.getenv(
     "SPOTIFY_ARTIST_INCLUDE_GROUPS",
@@ -856,7 +856,7 @@ def get_spotify_artist_tracks_by_search(
     offset = 0
     query = f'artist:"{artist_name}"'
     while offset < max_limit:
-        page_size = min(50, max_limit - offset)
+        page_size = min(SPOTIFY_SEARCH_LIMIT, 50, max_limit - offset)
         batch_raw = search_spotify(query, limit=page_size, include_meta=True, offset=offset, token=token)
         if not batch_raw:
             break
@@ -1087,9 +1087,10 @@ def build_artist_catalog_from_search(query: str, limit: int = 50, token: str | N
     results = []
     offset = 0
     while offset < max_limit:
+        page_size = min(SPOTIFY_SEARCH_LIMIT, 50, max_limit - offset)
         batch = search_spotify(
             query,
-            limit=min(50, max_limit - offset),
+            limit=page_size,
             include_meta=True,
             offset=offset,
             token=token,
@@ -1097,9 +1098,9 @@ def build_artist_catalog_from_search(query: str, limit: int = 50, token: str | N
         if not batch:
             break
         results.extend(batch)
-        if len(batch) < 50:
+        if len(batch) < page_size:
             break
-        offset += 50
+        offset += page_size
     if not results:
         return []
     albums_map = {}
