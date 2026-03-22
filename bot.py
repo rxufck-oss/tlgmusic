@@ -749,17 +749,31 @@ def search_spotify(
         results: list[dict] = []
         page_size = max(1, min(SPOTIFY_SEARCH_PAGE_SIZE, 50))
         current_offset = safe_offset
+        seen_offsets = set()
         while len(results) < safe_limit:
+            if current_offset in seen_offsets:
+                break
+            seen_offsets.add(current_offset)
             payload, invalid = fetch_payload(None, current_offset, market)
             if not payload and invalid:
                 payload, _ = fetch_payload(None, current_offset, None)
             if not payload:
                 break
-            items = (((payload.get("tracks") or {}).get("items")) or [])
+            tracks_obj = payload.get("tracks") or {}
+            items = (tracks_obj.get("items") or [])
             results.extend(map_items(items))
-            if len(items) < page_size:
+            total = int(tracks_obj.get("total") or 0)
+            effective_limit = int(tracks_obj.get("limit") or 0)
+            if effective_limit <= 0:
+                effective_limit = len(items) or page_size
+            next_offset = int(tracks_obj.get("offset") or current_offset) + effective_limit
+            if not items:
                 break
-            current_offset += page_size
+            if total and next_offset >= total:
+                break
+            if len(results) >= safe_limit:
+                break
+            current_offset = next_offset
             if current_offset >= 1000:
                 break
         return [x for x in results if x.get("url")][:safe_limit]
