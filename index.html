@@ -495,8 +495,8 @@
     let lastQuery = "";
     let searchAbort = null;
     let searchOffset = 0;
-    const PAGE_SIZE = 30;
-    const ARTIST_PAGE_SIZE = 20;
+    const PAGE_SIZE = 50;
+    const ARTIST_PAGE_SIZE = 50;
     let artistModalTracks = [];
     let artistState = {
       query: "",
@@ -512,6 +512,10 @@
     const loadMoreBtn = document.getElementById("loadMoreBtn");
     const artistLoadMoreWrap = document.getElementById("artistLoadMoreWrap");
     const artistLoadMoreBtn = document.getElementById("artistLoadMoreBtn");
+    const artistPanel = artistModalEl ? artistModalEl.querySelector(".panel") : null;
+
+    let autoLoadTimer = null;
+    let artistAutoLoadTimer = null;
 
     searchInput.addEventListener("keydown", (e) => {
       if (e.key !== "Enter") return;
@@ -573,6 +577,7 @@
           searchOffset += PAGE_SIZE;
           loadMoreWrap.style.display = "block";
           loadMoreBtn.onclick = () => searchMusic(query, true);
+          scheduleAutoLoad();
         } else {
           loadMoreWrap.style.display = "none";
         }
@@ -635,6 +640,7 @@
           if (idx >= 0) sendTrack(playlist[idx]);
         };
       });
+      scheduleAutoLoad();
     }
 
     function dedupeTracks(list) {
@@ -787,7 +793,7 @@
               duration: t.duration,
               url: t.url,
               cover: album.cover_url,
-              source: "soundcloud"
+              source: "spotify"
             };
             const idx = artistModalTracks.push(trackObj) - 1;
             return `
@@ -823,6 +829,7 @@
         };
       });
       updateArtistLoadMore();
+      scheduleArtistAutoLoad();
     }
 
     function updateArtistLoadMore() {
@@ -834,6 +841,39 @@
       artistLoadMoreWrap.style.display = "block";
       artistLoadMoreBtn.disabled = artistState.loading;
       artistLoadMoreBtn.textContent = artistState.loading ? "Загрузка..." : "Загрузить еще";
+    }
+
+    function scheduleAutoLoad() {
+      if (autoLoadTimer) clearTimeout(autoLoadTimer);
+      autoLoadTimer = setTimeout(() => {
+        autoLoadTimer = null;
+        maybeAutoLoad();
+      }, 140);
+    }
+
+    function maybeAutoLoad() {
+      if (!loadMoreWrap || !loadMoreBtn) return;
+      if (loadMoreWrap.style.display === "none") return;
+      if (loadMoreBtn.disabled) return;
+      const rect = loadMoreWrap.getBoundingClientRect();
+      if (rect.top < window.innerHeight + 200) {
+        loadMoreBtn.click();
+      }
+    }
+
+    function scheduleArtistAutoLoad() {
+      if (artistAutoLoadTimer) clearTimeout(artistAutoLoadTimer);
+      artistAutoLoadTimer = setTimeout(() => {
+        artistAutoLoadTimer = null;
+        maybeAutoLoadArtist();
+      }, 140);
+    }
+
+    function maybeAutoLoadArtist() {
+      if (!artistPanel || !artistState.hasMore || artistState.loading) return;
+      if (artistPanel.scrollTop + artistPanel.clientHeight >= artistPanel.scrollHeight - 200) {
+        loadArtistMore();
+      }
     }
 
     async function loadArtistMore() {
@@ -1031,6 +1071,7 @@
           spotifyOffset = data.next_offset || (spotifyOffset + PAGE_SIZE);
           loadMoreWrap.style.display = "block";
           loadMoreBtn.onclick = () => loadSpotifyLibrary(true);
+          scheduleAutoLoad();
         } else {
           loadMoreWrap.style.display = "none";
         }
@@ -1072,6 +1113,10 @@
       artistLoadMoreBtn.onclick = () => {
         loadArtistMore();
       };
+    }
+    window.addEventListener("scroll", scheduleAutoLoad, { passive: true });
+    if (artistPanel) {
+      artistPanel.addEventListener("scroll", scheduleArtistAutoLoad, { passive: true });
     }
   </script>
 </body>

@@ -88,6 +88,7 @@ SPOTIFY_OAUTH_SCOPES = os.getenv(
     "user-read-email user-read-private user-library-read",
 ).strip()
 SPOTIFY_ARTIST_CACHE_TTL = int(os.getenv("SPOTIFY_ARTIST_CACHE_TTL", "900"))
+SPOTIFY_ARTIST_FULL_CACHE_TTL = int(os.getenv("SPOTIFY_ARTIST_FULL_CACHE_TTL", "1800"))
 SPOTIFY_ALBUM_TRACKS_CACHE_TTL = int(os.getenv("SPOTIFY_ALBUM_TRACKS_CACHE_TTL", "21600"))
 SPOTIFY_TRACK_META_CACHE_TTL = int(os.getenv("SPOTIFY_TRACK_META_CACHE_TTL", "86400"))
 SPOTIFY_ARTIST_META_LIMIT = int(os.getenv("SPOTIFY_ARTIST_META_LIMIT", "20"))
@@ -116,6 +117,7 @@ USER_LAST_SEARCH_TS: dict[int, float] = {}
 SEARCH_CACHE: dict[str, dict] = {}
 SPOTIFY_TOKEN_CACHE: dict[str, float | str] = {"token": "", "expires_at": 0}
 SPOTIFY_ARTIST_CACHE: dict[str, dict] = {}
+SPOTIFY_ARTIST_FULL_CACHE: dict[str, dict] = {}
 SPOTIFY_ALBUM_TRACKS_CACHE: dict[str, dict] = {}
 SPOTIFY_TRACK_META_CACHE: dict[str, dict] = {}
 SPOTIFY_RATE_LIMITED_UNTIL = 0.0
@@ -553,7 +555,7 @@ def get_spotify_new_releases(limit: int = 12, country: str = "US") -> dict:
         artists = album.get("artists") or []
         artist = ", ".join([a.get("name", "") for a in artists if a.get("name")]).strip() or "Unknown Artist"
         images = album.get("images") or []
-        cover = images[0].get("url") if images else None
+        cover = pick_smallest_image(images)
         albums.append(
             {
                 "type": "album",
@@ -637,7 +639,7 @@ def get_spotify_new_releases(limit: int = 12, country: str = "US") -> dict:
         mins = duration_ms // 60000
         secs = (duration_ms % 60000) // 1000
         images = (it.get("album") or {}).get("images") or []
-        cover = images[0].get("url") if images else None
+        cover = pick_smallest_image(images)
         tracks.append(
             {
                 "type": "track",
@@ -713,7 +715,7 @@ def search_spotify(
             artist = ", ".join([a.get("name", "") for a in artists if a.get("name")]).strip() or "Unknown Artist"
             artist_ids = [a.get("id") for a in artists if a.get("id")]
             images = (it.get("album") or {}).get("images") or []
-            cover = images[0].get("url") if images else None
+            cover = pick_smallest_image(images)
             duration_ms = int(it.get("duration_ms") or 0)
             mins = duration_ms // 60000
             secs = (duration_ms % 60000) // 1000
@@ -795,6 +797,19 @@ def normalize_artist_name(name: str) -> str:
     return "".join(ch.lower() if ch.isalnum() else "" for ch in name)
 
 
+def pick_smallest_image(images: list) -> str | None:
+    if not images:
+        return None
+    try:
+        sorted_images = sorted(
+            images,
+            key=lambda it: (int(it.get("width") or 0) or 99999, int(it.get("height") or 0) or 99999),
+        )
+        return (sorted_images[0] or {}).get("url")
+    except Exception:
+        return (images[-1] or {}).get("url") or (images[0] or {}).get("url")
+
+
 def make_artist_cache_key(query: str, offset: int, limit: int, source: str | None = None) -> str:
     base = normalize_artist_name(query)
     return f"{(source or '').strip()}|{base}|{max(0, int(offset))}|{max(0, int(limit))}"
@@ -814,6 +829,35 @@ def get_cached_artist_payload(query: str, offset: int = 0, limit: int = 0, sourc
     if not payload or not payload.get("ok"):
         return None
     return payload
+
+
+def make_artist_full_cache_key(query: str, user_id: str | None = None, source: str | None = None) -> str:
+    base = normalize_artist_name(query)
+    return f"{(source or '').strip()}|{base}|{(user_id or '').strip()}"
+
+
+def get_cached_artist_full_catalog(query: str, user_id: str | None = None, source: str | None = None) -> dict | None:
+    if SPOTIFY_ARTIST_FULL_CACHE_TTL <= 0:
+        return None
+    key = make_artist_full_cache_key(query, user_id, source)
+    cached = SPOTIFY_ARTIST_FULL_CACHE.get(key)
+    if not cached:
+        return None
+    if time.time() - cached.get("created_at", 0) > SPOTIFY_ARTIST_FULL_CACHE_TTL:
+        SPOTIFY_ARTIST_FULL_CACHE.pop(key, None)
+        return None
+    return cached.get("payload")
+
+
+def set_cached_artist_full_catalog(
+    query: str, payload: dict, user_id: str | None = None, source: str | None = None
+) -> None:
+    if SPOTIFY_ARTIST_FULL_CACHE_TTL <= 0:
+        return
+    if not payload or not payload.get("ok"):
+        return
+    key = make_artist_full_cache_key(query, user_id, source)
+    SPOTIFY_ARTIST_FULL_CACHE[key] = {"payload": payload, "created_at": time.time()}
 
 
 def set_cached_artist_payload(
@@ -879,7 +923,7 @@ def search_spotify_artist_candidates(query: str, limit: int = 5, token: str | No
             {
                 "id": artist.get("id"),
                 "name": artist.get("name"),
-                "image": images[0].get("url") if images else None,
+                "image": pick_smallest_image(images),
                 "followers": (artist.get("followers") or {}).get("total"),
                 "genres": artist.get("genres") or [],
                 "url": ((artist.get("external_urls") or {}).get("spotify") or ""),
@@ -981,6 +1025,42 @@ def group_tracks_by_album(tracks: list) -> list:
     return albums
 
 
+def count_album_tracks(albums: list) -> int:
+    total = 0
+    for album in albums:
+        total += len(album.get("tracks") or [])
+    return total
+
+
+def slice_albums_by_tracks(albums: list, offset: int, limit: int) -> tuple[list, int | None, bool, int]:
+    if limit <= 0:
+        return [], None, False, 0
+    total_tracks = count_album_tracks(albums)
+    if offset >= total_tracks:
+        return [], None, False, total_tracks
+    remaining = limit
+    skipped = max(0, offset)
+    sliced_albums = []
+    for album in albums:
+        tracks = album.get("tracks") or []
+        if not tracks:
+            continue
+        if skipped >= len(tracks):
+            skipped -= len(tracks)
+            continue
+        current_tracks = tracks[skipped:]
+        skipped = 0
+        if remaining < len(current_tracks):
+            current_tracks = current_tracks[:remaining]
+        remaining -= len(current_tracks)
+        if current_tracks:
+            sliced_albums.append({**album, "tracks": current_tracks})
+        if remaining <= 0:
+            break
+    next_offset = offset + limit if (offset + limit) < total_tracks else None
+    return sliced_albums, next_offset, bool(next_offset), total_tracks
+
+
 def get_spotify_artist_albums(
     artist_id: str,
     limit: int = 20,
@@ -1027,7 +1107,7 @@ def get_spotify_artist_albums(
                     "name": it.get("name"),
                     "release_date": it.get("release_date"),
                     "total_tracks": it.get("total_tracks"),
-                    "cover_url": images[0].get("url") if images else None,
+                    "cover_url": pick_smallest_image(images),
                     "url": ((it.get("external_urls") or {}).get("spotify") or ""),
                 }
             )
@@ -1276,7 +1356,7 @@ def spotify_lookup_track(title: str, artist: str | None = None) -> dict | None:
     artists = it.get("artists") or []
     artist_name = ", ".join([a.get("name", "") for a in artists if a.get("name")]).strip() or "Unknown Artist"
     images = (it.get("album") or {}).get("images") or []
-    cover = images[0].get("url") if images else None
+    cover = pick_smallest_image(images)
     external_ids = it.get("external_ids") or {}
     album = it.get("album") or {}
     meta = {
@@ -2602,7 +2682,7 @@ def start_http_api() -> None:
             requested_offset = int(raw_offset) if raw_offset is not None else 0
         except (TypeError, ValueError):
             requested_offset = 0
-        requested_limit = max(1, min(requested_limit, SC_ARTIST_TRACK_LIMIT))
+        requested_limit = max(50, min(requested_limit, SC_ARTIST_TRACK_LIMIT))
         requested_offset = max(0, requested_offset)
 
         cached_payload = get_cached_artist_payload(query, requested_offset, requested_limit, source)
@@ -2615,21 +2695,38 @@ def start_http_api() -> None:
             token = token or get_spotify_token()
             if not token:
                 return jsonify({"ok": False, "error": "Spotify не настроен"}), 400
-            artist, albums_with_tracks = build_spotify_artist_catalog(
-                query, token=token, market=None
-            )
-            if not artist:
-                return jsonify({"ok": False, "error": "artist not found"}), 404
+            full_payload = get_cached_artist_full_catalog(query, user_id, source)
+            if not full_payload:
+                artist, albums_with_tracks = build_spotify_artist_catalog(
+                    query, token=token, market=None
+                )
+                if not artist:
+                    return jsonify({"ok": False, "error": "artist not found"}), 404
+                if not albums_with_tracks:
+                    return jsonify({"ok": False, "error": "artist catalog empty"}), 200
+                full_payload = {
+                    "ok": True,
+                    "artist": artist,
+                    "albums": albums_with_tracks,
+                    "total_tracks": count_album_tracks(albums_with_tracks),
+                }
+                set_cached_artist_full_catalog(query, full_payload, user_id, source)
+
+            albums_with_tracks = full_payload.get("albums") or []
             if not albums_with_tracks:
                 return jsonify({"ok": False, "error": "artist catalog empty"}), 200
+            page_albums, next_offset, has_more, total_tracks = slice_albums_by_tracks(
+                albums_with_tracks, requested_offset, requested_limit
+            )
             payload = {
                 "ok": True,
-                "artist": artist,
-                "albums": albums_with_tracks,
-                "offset": 0,
-                "limit": len(albums_with_tracks),
-                "next_offset": None,
-                "has_more": False,
+                "artist": full_payload.get("artist"),
+                "albums": page_albums,
+                "offset": requested_offset,
+                "limit": requested_limit,
+                "next_offset": next_offset,
+                "has_more": has_more,
+                "total_tracks": total_tracks,
             }
             set_cached_artist_payload(query, payload, requested_offset, requested_limit, source)
             return jsonify(payload)
@@ -2731,7 +2828,7 @@ def start_http_api() -> None:
             artists = track.get("artists") or []
             artist_name = ", ".join([a.get("name", "") for a in artists if a.get("name")]).strip() or "Unknown Artist"
             images = (track.get("album") or {}).get("images") or []
-            cover = images[0].get("url") if images else None
+            cover = pick_smallest_image(images)
             duration_ms = int(track.get("duration_ms") or 0)
             mins = duration_ms // 60000
             secs = (duration_ms % 60000) // 1000
