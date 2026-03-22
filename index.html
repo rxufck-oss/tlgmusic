@@ -544,10 +544,11 @@
             query,
             limit: PAGE_SIZE,
             offset: searchOffset,
-            source: "soundcloud",
+            source: "spotify",
             artistMode: false,
             includeMeta: true,
-            includeCovers: true
+            includeCovers: true,
+            userId
           })
         });
 
@@ -653,7 +654,7 @@
     }
 
     async function fetchArtistPage(query, offset = 0) {
-      const url = `${ARTIST_URL}?query=${encodeURIComponent(query)}&limit=${ARTIST_PAGE_SIZE}&offset=${offset}`;
+      const url = `${ARTIST_URL}?query=${encodeURIComponent(query)}&limit=${ARTIST_PAGE_SIZE}&offset=${offset}&source=spotify&userId=${encodeURIComponent(userId)}`;
       const res = await fetch(url);
       if (!res.ok) return null;
       return res.json();
@@ -928,7 +929,7 @@
             artist: track.artist,
             trackUrl: track.url,
             url: track.url,
-            source: "soundcloud",
+            source: track.source || "spotify",
             cover_url: track.cover
           })
         });

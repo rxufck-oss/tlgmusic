@@ -219,9 +219,19 @@ def prune_download_cache() -> None:
 
 
 def make_search_cache_key(
-    query: str, limit: int, artist_mode: bool, include_covers: bool, source: str, offset: int
+    query: str,
+    limit: int,
+    artist_mode: bool,
+    include_covers: bool,
+    source: str,
+    offset: int,
+    user_key: str | None = None,
 ) -> str:
-    return f"{source}|{query.lower().strip()}|{limit}|{offset}|{int(artist_mode)}|{int(include_covers)}"
+    user_part = (user_key or "").strip()
+    return (
+        f"{source}|{query.lower().strip()}|{limit}|{offset}|"
+        f"{int(artist_mode)}|{int(include_covers)}|{user_part}"
+    )
 
 
 def prune_search_cache() -> None:
@@ -592,8 +602,14 @@ def get_spotify_new_releases(limit: int = 12, country: str = "US") -> dict:
     return result
 
 
-def search_spotify(query: str, limit: int = 20, include_meta: bool = False, offset: int = 0) -> list:
-    token = get_spotify_token()
+def search_spotify(
+    query: str,
+    limit: int = 20,
+    include_meta: bool = False,
+    offset: int = 0,
+    token: str | None = None,
+) -> list:
+    token = token or get_spotify_token()
     if not token:
         return []
 
@@ -661,15 +677,15 @@ def normalize_artist_name(name: str) -> str:
     return "".join(ch.lower() if ch.isalnum() else "" for ch in name)
 
 
-def make_artist_cache_key(query: str, offset: int, limit: int) -> str:
+def make_artist_cache_key(query: str, offset: int, limit: int, source: str | None = None) -> str:
     base = normalize_artist_name(query)
-    return f"{base}|{max(0, int(offset))}|{max(0, int(limit))}"
+    return f"{(source or '').strip()}|{base}|{max(0, int(offset))}|{max(0, int(limit))}"
 
 
-def get_cached_artist_payload(query: str, offset: int = 0, limit: int = 0) -> dict | None:
+def get_cached_artist_payload(query: str, offset: int = 0, limit: int = 0, source: str | None = None) -> dict | None:
     if SPOTIFY_ARTIST_CACHE_TTL <= 0:
         return None
-    key = make_artist_cache_key(query, offset, limit)
+    key = make_artist_cache_key(query, offset, limit, source)
     cached = SPOTIFY_ARTIST_CACHE.get(key)
     if not cached:
         return None
@@ -682,12 +698,14 @@ def get_cached_artist_payload(query: str, offset: int = 0, limit: int = 0) -> di
     return payload
 
 
-def set_cached_artist_payload(query: str, payload: dict, offset: int = 0, limit: int = 0) -> None:
+def set_cached_artist_payload(
+    query: str, payload: dict, offset: int = 0, limit: int = 0, source: str | None = None
+) -> None:
     if SPOTIFY_ARTIST_CACHE_TTL <= 0:
         return
     if not payload or not payload.get("ok"):
         return
-    key = make_artist_cache_key(query, offset, limit)
+    key = make_artist_cache_key(query, offset, limit, source)
     SPOTIFY_ARTIST_CACHE[key] = {"payload": payload, "created_at": time.time()}
 
 
@@ -719,8 +737,8 @@ def set_cached_spotify_track_meta(title: str, artist: str | None, meta: dict) ->
     SPOTIFY_TRACK_META_CACHE[key] = {"meta": meta, "created_at": time.time()}
 
 
-def search_spotify_artist_candidates(query: str, limit: int = 5) -> list:
-    token = get_spotify_token()
+def search_spotify_artist_candidates(query: str, limit: int = 5, token: str | None = None) -> list:
+    token = token or get_spotify_token()
     if not token or not query:
         return []
     safe_limit = max(1, min(limit, 10))
@@ -752,14 +770,14 @@ def search_spotify_artist_candidates(query: str, limit: int = 5) -> list:
     return out
 
 
-def search_spotify_artist(query: str) -> dict | None:
+def search_spotify_artist(query: str, token: str | None = None) -> dict | None:
     if not query:
         return None
-    candidates = search_spotify_artist_candidates(query, limit=8)
+    candidates = search_spotify_artist_candidates(query, limit=8, token=token)
     if not candidates:
         alt = query.replace("ASAP", "A$AP").replace("A$AP", "A$AP").strip()
         if alt and alt.lower() != query.lower():
-            candidates = search_spotify_artist_candidates(alt, limit=8)
+            candidates = search_spotify_artist_candidates(alt, limit=8, token=token)
     if not candidates:
         return None
     qn = normalize_artist_name(query)
@@ -773,7 +791,10 @@ def search_spotify_artist(query: str) -> dict | None:
 
 
 def get_spotify_artist_tracks_by_search(
-    artist_name: str, artist_id: str | None = None, limit: int | None = None
+    artist_name: str,
+    artist_id: str | None = None,
+    limit: int | None = None,
+    token: str | None = None,
 ) -> list:
     if not artist_name:
         return []
@@ -783,7 +804,7 @@ def get_spotify_artist_tracks_by_search(
     query = f'artist:"{artist_name}"'
     while offset < max_limit:
         page_size = min(50, max_limit - offset)
-        batch_raw = search_spotify(query, limit=page_size, include_meta=True, offset=offset)
+        batch_raw = search_spotify(query, limit=page_size, include_meta=True, offset=offset, token=token)
         if not batch_raw:
             break
         batch = batch_raw
@@ -834,8 +855,13 @@ def group_tracks_by_album(tracks: list) -> list:
     return albums
 
 
-def get_spotify_artist_albums(artist_id: str, limit: int = 20, include_groups: str | None = None) -> list:
-    token = get_spotify_token()
+def get_spotify_artist_albums(
+    artist_id: str,
+    limit: int = 20,
+    include_groups: str | None = None,
+    token: str | None = None,
+) -> list:
+    token = token or get_spotify_token()
     if not token or not artist_id:
         return []
     groups = include_groups or SPOTIFY_ARTIST_INCLUDE_GROUPS or "album,single,appears_on,compilation"
@@ -885,8 +911,12 @@ def get_spotify_artist_albums(artist_id: str, limit: int = 20, include_groups: s
     return albums
 
 
-def get_spotify_album_tracks(album_id: str, artist_id: str | None = None) -> list:
-    token = get_spotify_token()
+def get_spotify_album_tracks(
+    album_id: str,
+    artist_id: str | None = None,
+    token: str | None = None,
+) -> list:
+    token = token or get_spotify_token()
     if not token or not album_id:
         return []
     if SPOTIFY_ALBUM_TRACKS_CACHE_TTL > 0:
@@ -953,14 +983,18 @@ def get_spotify_album_tracks(album_id: str, artist_id: str | None = None) -> lis
     return tracks
 
 
-def build_artist_catalog_from_artist(artist_id: str, artist_name: str | None = None) -> list:
+def build_artist_catalog_from_artist(
+    artist_id: str, artist_name: str | None = None, token: str | None = None
+) -> list:
     if not artist_id:
         return []
-    tracks = get_spotify_artist_tracks_by_search(artist_name or "", artist_id, SPOTIFY_ARTIST_TRACK_LIMIT)
+    tracks = get_spotify_artist_tracks_by_search(
+        artist_name or "", artist_id, SPOTIFY_ARTIST_TRACK_LIMIT, token=token
+    )
     albums_from_tracks = group_tracks_by_album(tracks)
     if not SPOTIFY_ARTIST_EXPAND_ALBUMS:
         return albums_from_tracks
-    albums = get_spotify_artist_albums(artist_id, limit=SPOTIFY_ARTIST_ALBUM_LIMIT)
+    albums = get_spotify_artist_albums(artist_id, limit=SPOTIFY_ARTIST_ALBUM_LIMIT, token=token)
     if not albums:
         return albums_from_tracks
     fallback_map = {}
@@ -970,7 +1004,7 @@ def build_artist_catalog_from_artist(artist_id: str, artist_name: str | None = N
     out = []
     for album in albums:
         album_id = album.get("id")
-        tracks = get_spotify_album_tracks(album_id, artist_id=artist_id) if album_id else []
+        tracks = get_spotify_album_tracks(album_id, artist_id=artist_id, token=token) if album_id else []
         if not tracks:
             fb = None
             if album_id and album_id in fallback_map:
@@ -993,14 +1027,20 @@ def build_artist_catalog_from_artist(artist_id: str, artist_name: str | None = N
     return out or albums_from_tracks
 
 
-def build_artist_catalog_from_search(query: str, limit: int = 50) -> list:
+def build_artist_catalog_from_search(query: str, limit: int = 50, token: str | None = None) -> list:
     if not query:
         return []
     max_limit = max(20, min(limit, SPOTIFY_ARTIST_TRACK_LIMIT))
     results = []
     offset = 0
     while offset < max_limit:
-        batch = search_spotify(query, limit=min(50, max_limit - offset), include_meta=True, offset=offset)
+        batch = search_spotify(
+            query,
+            limit=min(50, max_limit - offset),
+            include_meta=True,
+            offset=offset,
+            token=token,
+        )
         if not batch:
             break
         results.extend(batch)
@@ -1059,7 +1099,7 @@ def build_artist_catalog_from_search(query: str, limit: int = 50) -> list:
             album_id = album.get("id")
             if not album_id:
                 continue
-            full_tracks = get_spotify_album_tracks(album_id)
+            full_tracks = get_spotify_album_tracks(album_id, token=token)
             if full_tracks:
                 album["tracks"] = [
                     {k: v for k, v in t.items() if k != "artist_ids"} for t in full_tracks
@@ -1255,6 +1295,33 @@ def spotify_user_request(user_id: str, url: str) -> dict | None:
         timeout=15,
         max_retries=0,
     )
+
+
+def get_spotify_request_token(user_id: str | None = None) -> str | None:
+    if user_id:
+        token = get_spotify_user_token(user_id)
+        if token:
+            return token
+    return get_spotify_token()
+
+
+def build_spotify_artist_catalog(query: str, token: str | None = None) -> tuple[dict | None, list]:
+    artist = search_spotify_artist(query, token=token)
+    if artist:
+        albums = build_artist_catalog_from_artist(artist.get("id"), artist.get("name"), token=token)
+        return artist, albums
+    albums = build_artist_catalog_from_search(query, limit=SPOTIFY_ARTIST_TRACK_LIMIT, token=token)
+    if albums:
+        fallback_artist = {
+            "id": None,
+            "name": query,
+            "image": None,
+            "followers": None,
+            "genres": [],
+            "url": "",
+        }
+        return fallback_artist, albums
+    return None, []
 
 
 def resolve_spotify_to_soundcloud(track_url: str, title: str | None = None, artist: str | None = None) -> str | None:
@@ -1942,14 +2009,15 @@ def search_music(
     source: str = "soundcloud",
     include_meta: bool = False,
     offset: int = 0,
+    user_id: str | None = None,
 ) -> tuple[list, str | None]:
     try:
         target_limit = max(1, min(limit or MAX_SEARCH_RESULTS, 200))
         if artist_mode:
             target_limit = max(target_limit, ARTIST_SEARCH_RESULTS)
-        source = "soundcloud"
+        source = (source or "spotify").strip().lower()
 
-        if "soundcloud.com/" in query:
+        if "soundcloud.com/" in query and source != "spotify":
             return [
                 {
                     "id": query,
@@ -1962,10 +2030,29 @@ def search_music(
                 }
             ], None
 
-        cache_key = make_search_cache_key(query, target_limit, artist_mode, include_covers, source, offset)
+        cache_key = make_search_cache_key(
+            query, target_limit, artist_mode, include_covers, source, offset, user_id
+        )
         cached = get_search_cache(cache_key)
         if cached is not None:
             return cached, None
+
+        if source == "spotify":
+            token = get_spotify_request_token(user_id)
+            if not token:
+                return [], "Spotify не настроен"
+            spotify_query = f'artist:"{query}"' if artist_mode else query
+            videos = search_spotify(
+                spotify_query,
+                target_limit,
+                include_meta=True,
+                offset=offset,
+                token=token,
+            )
+            if videos:
+                set_search_cache(cache_key, videos)
+                return videos, None
+            return [], "Spotify не вернул результаты. Попробуйте другой запрос."
 
         if artist_mode and is_soundcloud_api_configured():
             artist = search_soundcloud_user(query)
@@ -2328,7 +2415,8 @@ def start_http_api() -> None:
         artist_mode = bool(payload.get("artistMode")) or bool(payload.get("artist"))
         include_covers = bool(payload.get("includeCovers", False))
         include_meta = bool(payload.get("includeMeta", False))
-        source = str(payload.get("source") or "soundcloud").strip().lower()
+        source = str(payload.get("source") or "spotify").strip().lower()
+        user_id = str(payload.get("userId") or payload.get("user_id") or "").strip() or None
         if artist_mode:
             requested_limit = max(10, min(requested_limit, 200))
         else:
@@ -2341,16 +2429,17 @@ def start_http_api() -> None:
             source,
             include_meta,
             requested_offset,
+            user_id,
         )
         return jsonify({"ok": len(videos) > 0, "error": error, "results": videos})
 
     @app.get("/api/artist")
     def api_artist():
-        if SC_USER_TRACK_SOURCE != "yt-dlp" and not is_soundcloud_api_configured():
-            return jsonify({"ok": False, "error": "SoundCloud не настроен"}), 400
         query = str(request.args.get("query") or "").strip()
         if not query:
             return jsonify({"ok": False, "error": "query is required"}), 400
+        source = str(request.args.get("source") or "spotify").strip().lower()
+        user_id = str(request.args.get("userId") or request.args.get("user_id") or "").strip() or None
         raw_limit = request.args.get("limit")
         raw_offset = request.args.get("offset")
         try:
@@ -2364,9 +2453,32 @@ def start_http_api() -> None:
         requested_limit = max(1, min(requested_limit, SC_ARTIST_TRACK_LIMIT))
         requested_offset = max(0, requested_offset)
 
-        cached_payload = get_cached_artist_payload(query, requested_offset, requested_limit)
+        cached_payload = get_cached_artist_payload(query, requested_offset, requested_limit, source)
         if cached_payload is not None:
             return jsonify(cached_payload)
+        if source == "spotify":
+            token = get_spotify_request_token(user_id)
+            if not token:
+                return jsonify({"ok": False, "error": "Spotify не настроен"}), 400
+            artist, albums_with_tracks = build_spotify_artist_catalog(query, token=token)
+            if not artist:
+                return jsonify({"ok": False, "error": "artist not found"}), 404
+            if not albums_with_tracks:
+                return jsonify({"ok": False, "error": "artist catalog empty"}), 200
+            payload = {
+                "ok": True,
+                "artist": artist,
+                "albums": albums_with_tracks,
+                "offset": 0,
+                "limit": len(albums_with_tracks),
+                "next_offset": None,
+                "has_more": False,
+            }
+            set_cached_artist_payload(query, payload, requested_offset, requested_limit, source)
+            return jsonify(payload)
+
+        if SC_USER_TRACK_SOURCE != "yt-dlp" and not is_soundcloud_api_configured():
+            return jsonify({"ok": False, "error": "SoundCloud не настроен"}), 400
         artist, albums_with_tracks, page_info = build_soundcloud_artist_catalog(
             query, offset=requested_offset, limit=requested_limit
         )
@@ -2383,7 +2495,7 @@ def start_http_api() -> None:
             "next_offset": page_info.get("next_offset"),
             "has_more": page_info.get("has_more"),
         }
-        set_cached_artist_payload(query, payload, requested_offset, requested_limit)
+        set_cached_artist_payload(query, payload, requested_offset, requested_limit, source)
         return jsonify(payload)
 
     @app.get("/spotify/login")
