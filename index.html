@@ -172,7 +172,7 @@
       width: 64px;
       height: 64px;
       border-radius: 12px;
-      object-fit: cover;
+      object-fit: contain;
       margin-right: 10px;
     }
     .album-header {
@@ -284,11 +284,27 @@
       width: 64px;
       height: 64px;
       border-radius: 12px;
-      object-fit: cover;
+      object-fit: contain;
       background: linear-gradient(135deg, var(--accent) 0%, #764ba2 100%);
       flex-shrink: 0;
       position: relative;
       z-index: 1;
+    }
+
+    .track.disabled {
+      opacity: 0.6;
+      pointer-events: none;
+    }
+
+    .track-badge {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 2px 6px;
+      border-radius: 999px;
+      background: rgba(255, 90, 0, 0.12);
+      color: #ff5a00;
+      font-size: 11px;
+      font-weight: 600;
     }
 
     .track-thumbnail.placeholder {
@@ -596,7 +612,9 @@
         duration: raw.duration || raw.duration_string || "?:??",
         url: raw.url || raw.webpage_url || "",
         cover: raw.cover_url || raw.thumbnail || "",
-        source: raw.source || "soundcloud"
+        source: raw.source || "soundcloud",
+        restricted: !!raw.restricted,
+        restriction_reason: raw.restriction_reason || ""
       };
     }
 
@@ -612,17 +630,20 @@
         const list = grouped[artist];
         const items = list.map((track) => {
           const idx = playlist.findIndex((p) => p.id === track.id && p.url === track.url);
+          const restricted = !!track.restricted;
+          const badge = restricted ? `<span class="track-badge">Недоступно</span>` : "";
+          const disabledClass = restricted ? " disabled" : "";
           return `
-            <div class="track" data-i="${idx}">
+            <div class="track${disabledClass}" data-i="${idx}">
               ${track.cover ?
-                `<img src="${escapeHtml(track.cover)}" class="track-thumbnail" alt="">` :
+                `<img src="${escapeHtml(track.cover)}" class="track-thumbnail" alt="" loading="lazy">` :
                 `<div class="track-thumbnail placeholder">🎵</div>`
               }
               <div class="track-info">
                 <div class="track-title">${escapeHtml(track.title)}</div>
-                <div class="track-duration">${escapeHtml(track.duration)}</div>
+                <div class="track-duration">${escapeHtml(track.duration)} ${badge}</div>
               </div>
-              <div class="track-play-icon">▶️</div>
+              <div class="track-play-icon">${restricted ? "⛔" : "▶️"}</div>
             </div>
           `;
         }).join("");
@@ -637,7 +658,14 @@
       results.querySelectorAll(".track").forEach((el) => {
         el.onclick = () => {
           const idx = Number(el.getAttribute("data-i"));
-          if (idx >= 0) sendTrack(playlist[idx]);
+          if (idx >= 0) {
+            const track = playlist[idx];
+            if (track?.restricted) {
+              showNotification("Трек недоступен в вашем регионе");
+              return;
+            }
+            sendTrack(track);
+          }
         };
       });
       scheduleAutoLoad();
@@ -756,7 +784,7 @@
       const genres = (artist.genres || []).slice(0, 2).join(", ");
       const followers = artist.followers ? `${artist.followers.toLocaleString()} слушателей` : "";
       artistCardEl.innerHTML = `
-        ${artist.image ? `<img src="${escapeHtml(artist.image)}" alt="">` : `<div class="track-thumbnail placeholder">🎵</div>`}
+        ${artist.image ? `<img src="${escapeHtml(artist.image)}" alt="" loading="lazy">` : `<div class="track-thumbnail placeholder">🎵</div>`}
         <div>
           <div class="artist-name">${escapeHtml(artist.name || "Артист")}</div>
           <div class="artist-meta">${escapeHtml([genres, followers].filter(Boolean).join(" • "))}</div>
@@ -771,7 +799,7 @@
       const artist = artistState.artist || { name: artistState.query || "Артист", genres: [] };
       const header = `
         <div class="album-header">
-          ${artist.image ? `<img class="album-cover" src="${escapeHtml(artist.image)}" alt="">` : `<div class="album-cover"></div>`}
+          ${artist.image ? `<img class="album-cover" src="${escapeHtml(artist.image)}" alt="" loading="lazy">` : `<div class="album-cover"></div>`}
           <div>
             <div class="artist-title">${escapeHtml(artist.name || "Артист")}</div>
             <div class="album-meta">${escapeHtml((artist.genres || []).slice(0, 3).join(", "))}</div>
@@ -793,23 +821,27 @@
               duration: t.duration,
               url: t.url,
               cover: album.cover_url,
-              source: "spotify"
+              source: "spotify",
+              restricted: !!t.restricted,
+              restriction_reason: t.restriction_reason || ""
             };
             const idx = artistModalTracks.push(trackObj) - 1;
+            const badge = t.restricted ? `<span class="track-badge">Недоступно</span>` : "";
+            const disabledClass = t.restricted ? " disabled" : "";
             return `
-              <div class="track" data-i="${idx}">
+              <div class="track${disabledClass}" data-i="${idx}">
                 <div class="track-info">
                   <div class="track-title">${escapeHtml(t.title)}</div>
-                  <div class="track-duration">${escapeHtml(t.duration)}</div>
+                  <div class="track-duration">${escapeHtml(t.duration)} ${badge}</div>
                 </div>
-                <div class="track-play-icon">▶️</div>
+                <div class="track-play-icon">${t.restricted ? "⛔" : "▶️"}</div>
               </div>
             `;
           }).join("");
           return `
             <div class="album-block">
               <div class="album-header">
-                ${album.cover_url ? `<img class="album-cover" src="${escapeHtml(album.cover_url)}" alt="">` : `<div class="album-cover"></div>`}
+                ${album.cover_url ? `<img class="album-cover" src="${escapeHtml(album.cover_url)}" alt="" loading="lazy">` : `<div class="album-cover"></div>`}
                 <div>
                   <div class="album-title">${escapeHtml(album.name || "Альбом")}</div>
                   <div class="album-meta">${escapeHtml(album.release_date || "")}</div>
@@ -825,7 +857,14 @@
       artistModalBody.querySelectorAll(".track").forEach((el) => {
         el.onclick = () => {
           const idx = Number(el.getAttribute("data-i"));
-          if (idx >= 0) sendTrack(artistModalTracks[idx]);
+          if (idx >= 0) {
+            const track = artistModalTracks[idx];
+            if (track?.restricted) {
+              showNotification("Трек недоступен в вашем регионе");
+              return;
+            }
+            sendTrack(track);
+          }
         };
       });
       updateArtistLoadMore();

@@ -92,6 +92,7 @@ SPOTIFY_ARTIST_FULL_CACHE_TTL = int(os.getenv("SPOTIFY_ARTIST_FULL_CACHE_TTL", "
 SPOTIFY_ALBUM_TRACKS_CACHE_TTL = int(os.getenv("SPOTIFY_ALBUM_TRACKS_CACHE_TTL", "21600"))
 SPOTIFY_TRACK_META_CACHE_TTL = int(os.getenv("SPOTIFY_TRACK_META_CACHE_TTL", "86400"))
 SPOTIFY_ARTIST_META_LIMIT = int(os.getenv("SPOTIFY_ARTIST_META_LIMIT", "20"))
+SPOTIFY_USER_CACHE_TTL = int(os.getenv("SPOTIFY_USER_CACHE_TTL", "900"))
 SPOTIFY_MIN_INTERVAL_MS = int(os.getenv("SPOTIFY_MIN_INTERVAL_MS", "150"))
 SPOTIFY_MAX_CONCURRENCY = int(os.getenv("SPOTIFY_MAX_CONCURRENCY", "1"))
 SC_CLIENT_ID = os.getenv("SC_CLIENT_ID", "").strip()
@@ -119,6 +120,7 @@ SPOTIFY_TOKEN_CACHE: dict[str, float | str] = {"token": "", "expires_at": 0}
 SPOTIFY_ARTIST_CACHE: dict[str, dict] = {}
 SPOTIFY_ARTIST_FULL_CACHE: dict[str, dict] = {}
 SPOTIFY_ALBUM_TRACKS_CACHE: dict[str, dict] = {}
+SPOTIFY_USER_CACHE: dict[str, dict] = {}
 SPOTIFY_TRACK_META_CACHE: dict[str, dict] = {}
 SPOTIFY_RATE_LIMITED_UNTIL = 0.0
 SPOTIFY_LAST_REQUEST_AT = 0.0
@@ -716,6 +718,7 @@ def search_spotify(
             artist_ids = [a.get("id") for a in artists if a.get("id")]
             images = (it.get("album") or {}).get("images") or []
             cover = pick_smallest_image(images)
+            restricted, restriction_reason = get_spotify_restriction(it, market)
             duration_ms = int(it.get("duration_ms") or 0)
             mins = duration_ms // 60000
             secs = (duration_ms % 60000) // 1000
@@ -729,6 +732,8 @@ def search_spotify(
                 "cover_url": cover,
                 "source": "spotify",
                 "artist_ids": artist_ids,
+                "restricted": restricted,
+                "restriction_reason": restriction_reason,
             }
             if include_meta:
                 album = it.get("album") or {}
@@ -808,6 +813,20 @@ def pick_smallest_image(images: list) -> str | None:
         return (sorted_images[0] or {}).get("url")
     except Exception:
         return (images[-1] or {}).get("url") or (images[0] or {}).get("url")
+
+
+def get_spotify_restriction(track: dict, market: str | None = None) -> tuple[bool, str | None]:
+    reason = None
+    if isinstance(track.get("restrictions"), dict):
+        reason = track.get("restrictions", {}).get("reason") or None
+    is_playable = track.get("is_playable")
+    if is_playable is False and not reason:
+        reason = "unplayable"
+    available_markets = track.get("available_markets")
+    if market and isinstance(available_markets, list):
+        if market.upper() not in [m.upper() for m in available_markets]:
+            reason = reason or "market"
+    return bool(reason), reason
 
 
 def make_artist_cache_key(query: str, offset: int, limit: int, source: str | None = None) -> str:
@@ -1121,6 +1140,7 @@ def get_spotify_album_tracks(
     album_id: str,
     artist_id: str | None = None,
     token: str | None = None,
+    market: str | None = None,
 ) -> list:
     token = token or get_spotify_token()
     if not token or not album_id:
@@ -1142,6 +1162,8 @@ def get_spotify_album_tracks(
     per_page = 50
     while True:
         url = f"https://api.spotify.com/v1/albums/{album_id}/tracks?limit={per_page}&offset={offset}"
+        if market:
+            url += f"&market={urllib.parse.quote(market)}"
         payload = http_json_request(
             url,
             headers={
@@ -1160,6 +1182,7 @@ def get_spotify_album_tracks(
             if artist_id and artist_id not in artist_ids:
                 continue
             artist = ", ".join([a.get("name", "") for a in artists if a.get("name")]).strip() or "Unknown Artist"
+            restricted, restriction_reason = get_spotify_restriction(it, market)
             duration_ms = int(it.get("duration_ms") or 0)
             duration_sec = duration_ms / 1000 if duration_ms else 0
             if MIN_TRACK_DURATION_SEC and duration_sec and duration_sec < MIN_TRACK_DURATION_SEC:
@@ -1177,6 +1200,8 @@ def get_spotify_album_tracks(
                     "duration": f"{mins}:{secs:02d}" if duration_ms else "?:??",
                     "url": url,
                     "source": "spotify",
+                    "restricted": restricted,
+                    "restriction_reason": restriction_reason,
                 }
             )
         if len(items) < per_page:
@@ -1210,7 +1235,11 @@ def build_artist_catalog_from_artist(
     out = []
     for album in albums:
         album_id = album.get("id")
-        tracks = get_spotify_album_tracks(album_id, artist_id=artist_id, token=token) if album_id else []
+        tracks = (
+            get_spotify_album_tracks(album_id, artist_id=artist_id, token=token, market=market)
+            if album_id
+            else []
+        )
         if not tracks:
             fb = None
             if album_id and album_id in fallback_map:
@@ -1505,6 +1534,26 @@ def spotify_user_request(user_id: str, url: str) -> dict | None:
         timeout=15,
         max_retries=0,
     )
+
+
+def get_spotify_user_profile(user_id: str) -> dict | None:
+    if not user_id:
+        return None
+    cached = SPOTIFY_USER_CACHE.get(user_id)
+    if cached and time.time() - cached.get("created_at", 0) <= SPOTIFY_USER_CACHE_TTL:
+        return cached.get("profile")
+    profile = spotify_user_request(user_id, "https://api.spotify.com/v1/me")
+    if profile:
+        SPOTIFY_USER_CACHE[user_id] = {"profile": profile, "created_at": time.time()}
+    return profile
+
+
+def get_spotify_user_country(user_id: str) -> str | None:
+    profile = get_spotify_user_profile(user_id)
+    if not profile:
+        return None
+    country = (profile.get("country") or "").strip().upper()
+    return country or None
 
 
 def get_spotify_request_token(user_id: str | None = None) -> str | None:
@@ -2269,7 +2318,7 @@ def search_music(
             if not token:
                 return [], "Spotify не настроен"
             spotify_query = f'artist:"{query}"' if artist_mode else query
-            market = None
+            market = get_spotify_user_country(user_id) if user_id else None
             videos = search_spotify(
                 spotify_query,
                 target_limit,
@@ -2697,8 +2746,9 @@ def start_http_api() -> None:
                 return jsonify({"ok": False, "error": "Spotify не настроен"}), 400
             full_payload = get_cached_artist_full_catalog(query, user_id, source)
             if not full_payload:
+                market = get_spotify_user_country(user_id) if user_id else None
                 artist, albums_with_tracks = build_spotify_artist_catalog(
-                    query, token=token, market=None
+                    query, token=token, market=market
                 )
                 if not artist:
                     return jsonify({"ok": False, "error": "artist not found"}), 404
