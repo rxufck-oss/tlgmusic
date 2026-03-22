@@ -118,6 +118,7 @@ SPOTIFY_RATE_LIMITED_UNTIL = 0.0
 SPOTIFY_LAST_REQUEST_AT = 0.0
 SPOTIFY_LAST_ERROR_TS = 0.0
 SPOTIFY_LAST_ERROR_MSG = ""
+SPOTIFY_LAST_ERROR_URL = ""
 SPOTIFY_LOCK = threading.Lock()
 SPOTIFY_SEM = threading.Semaphore(max(1, SPOTIFY_MAX_CONCURRENCY))
 SPOTIFY_OAUTH_STATE: dict[str, dict] = {}
@@ -370,12 +371,14 @@ def http_json_request(
             if is_spotify:
                 SPOTIFY_LAST_ERROR_TS = time.time()
                 SPOTIFY_LAST_ERROR_MSG = f"HTTP {e.code}" + (f": {error_message}" if error_message else "")
+                SPOTIFY_LAST_ERROR_URL = url
             return None
         except Exception as e:
             logger.error("HTTP JSON request failed (%s): %s", url, e)
             if is_spotify:
                 SPOTIFY_LAST_ERROR_TS = time.time()
                 SPOTIFY_LAST_ERROR_MSG = str(e)
+                SPOTIFY_LAST_ERROR_URL = url
             return None
         finally:
             if is_spotify:
@@ -397,8 +400,17 @@ def spotify_error_hint() -> str | None:
     if time.time() - SPOTIFY_LAST_ERROR_TS > 120:
         return None
     msg = (SPOTIFY_LAST_ERROR_MSG or "").strip()
+    url_hint = (SPOTIFY_LAST_ERROR_URL or "").strip()
+    if url_hint:
+        try:
+            parsed = urllib.parse.urlparse(url_hint)
+            url_hint = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+        except Exception:
+            pass
     if not msg:
         return None
+    if url_hint:
+        msg = f"{msg} [{url_hint}]"
     if "401" in msg:
         return "Токен Spotify истек — подключите снова"
     if "403" in msg:
