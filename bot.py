@@ -369,6 +369,21 @@ def is_spotify_rate_limited() -> bool:
     return time.time() < SPOTIFY_RATE_LIMITED_UNTIL
 
 
+def spotify_error_hint() -> str | None:
+    if time.time() - SPOTIFY_LAST_ERROR_TS > 120:
+        return None
+    msg = (SPOTIFY_LAST_ERROR_MSG or "").strip()
+    if not msg:
+        return None
+    if "401" in msg:
+        return "Токен Spotify истек — подключите снова"
+    if "403" in msg:
+        return "Spotify запретил запрос (403). Проверьте доступы приложения."
+    if "429" in msg:
+        return "Spotify ограничил запросы, попробуйте позже"
+    return f"Ошибка Spotify: {msg}"
+
+
 def get_spotify_token() -> str | None:
     if not is_spotify_configured():
         return None
@@ -2055,7 +2070,8 @@ def search_music(
             if videos:
                 set_search_cache(cache_key, videos)
                 return videos, None
-            return [], "Spotify не вернул результаты. Попробуйте другой запрос."
+            hint = spotify_error_hint()
+            return [], hint or "Spotify не вернул результаты. Попробуйте другой запрос."
 
         if artist_mode and is_soundcloud_api_configured():
             artist = search_soundcloud_user(query)
