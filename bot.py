@@ -2038,7 +2038,10 @@ def search_music(
             return cached, None
 
         if source == "spotify":
-            token = get_spotify_request_token(user_id)
+            token = get_spotify_user_token(user_id) if user_id else None
+            if user_id and not token:
+                return [], "Подключите Spotify в приложении"
+            token = token or get_spotify_token()
             if not token:
                 return [], "Spotify не настроен"
             spotify_query = f'artist:"{query}"' if artist_mode else query
@@ -2457,7 +2460,10 @@ def start_http_api() -> None:
         if cached_payload is not None:
             return jsonify(cached_payload)
         if source == "spotify":
-            token = get_spotify_request_token(user_id)
+            token = get_spotify_user_token(user_id) if user_id else None
+            if user_id and not token:
+                return jsonify({"ok": False, "error": "Подключите Spotify"}), 401
+            token = token or get_spotify_token()
             if not token:
                 return jsonify({"ok": False, "error": "Spotify не настроен"}), 400
             artist, albums_with_tracks = build_spotify_artist_catalog(query, token=token)

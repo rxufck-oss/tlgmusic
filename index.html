@@ -555,6 +555,10 @@
         if (!response.ok) throw new Error("Search failed");
 
         const data = await response.json();
+        if (data?.error) {
+          showError(data.error);
+          return;
+        }
         const incoming = dedupeTracks((data.results || []).map(mapTrack));
         if (!append) {
           playlist = incoming;
