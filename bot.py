@@ -693,12 +693,14 @@ def search_spotify(
             proxy=SPOTIFY_PROXY or None,
         )
         if payload:
+            global SPOTIFY_LAST_ERROR_TS
+            SPOTIFY_LAST_ERROR_TS = 0.0
             return payload, False
         invalid = False
-        if "Invalid limit" in (SPOTIFY_LAST_ERROR_MSG or ""):
-            url_hint = SPOTIFY_LAST_ERROR_URL or ""
-            if "/v1/search" in url_hint:
-                invalid = True
+        msg = SPOTIFY_LAST_ERROR_MSG or ""
+        url_hint = SPOTIFY_LAST_ERROR_URL or ""
+        if "/v1/search" in url_hint and ("Invalid limit" in msg or "HTTP 400" in msg):
+            invalid = True
         return None, invalid
 
     def map_items(items: list) -> list:
@@ -2164,7 +2166,7 @@ def search_music(
             if not token:
                 return [], "Spotify не настроен"
             spotify_query = f'artist:"{query}"' if artist_mode else query
-            market = "from_token" if user_id else None
+            market = None
             videos = search_spotify(
                 spotify_query,
                 target_limit,
@@ -2590,9 +2592,8 @@ def start_http_api() -> None:
             token = token or get_spotify_token()
             if not token:
                 return jsonify({"ok": False, "error": "Spotify не настроен"}), 400
-            market = "from_token" if user_id else None
             artist, albums_with_tracks = build_spotify_artist_catalog(
-                query, token=token, market=market
+                query, token=token, market=None
             )
             if not artist:
                 return jsonify({"ok": False, "error": "artist not found"}), 404
