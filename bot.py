@@ -31,7 +31,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory, redirect
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -78,6 +78,11 @@ SC_NEW_RELEASES_LIMIT = int(os.getenv("SC_NEW_RELEASES_LIMIT", "30"))
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
 SPOTIFY_PROXY = os.getenv("SPOTIFY_PROXY", "").strip()
+SPOTIFY_REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI", "").strip()
+SPOTIFY_OAUTH_SCOPES = os.getenv(
+    "SPOTIFY_OAUTH_SCOPES",
+    "user-read-email user-read-private user-library-read",
+).strip()
 SPOTIFY_ARTIST_CACHE_TTL = int(os.getenv("SPOTIFY_ARTIST_CACHE_TTL", "900"))
 SPOTIFY_ALBUM_TRACKS_CACHE_TTL = int(os.getenv("SPOTIFY_ALBUM_TRACKS_CACHE_TTL", "21600"))
 SPOTIFY_TRACK_META_CACHE_TTL = int(os.getenv("SPOTIFY_TRACK_META_CACHE_TTL", "86400"))
@@ -115,6 +120,7 @@ SPOTIFY_LAST_ERROR_TS = 0.0
 SPOTIFY_LAST_ERROR_MSG = ""
 SPOTIFY_LOCK = threading.Lock()
 SPOTIFY_SEM = threading.Semaphore(max(1, SPOTIFY_MAX_CONCURRENCY))
+SPOTIFY_OAUTH_STATE: dict[str, dict] = {}
 NEW_RELEASES_CACHE: dict[str, dict] = {}
 DB_CONN = None
 HTTP_API_THREAD = None
@@ -156,6 +162,18 @@ def init_db() -> None:
             track_key TEXT PRIMARY KEY,
             file_id TEXT NOT NULL,
             updated_at INTEGER NOT NULL
+        )
+        """
+    )
+    DB_CONN.execute(
+        """
+        CREATE TABLE IF NOT EXISTS spotify_tokens (
+            user_id TEXT PRIMARY KEY,
+            access_token TEXT NOT NULL,
+            refresh_token TEXT,
+            expires_at INTEGER NOT NULL,
+            scope TEXT,
+            token_type TEXT
         )
         """
     )
@@ -1106,6 +1124,137 @@ def spotify_lookup_track(title: str, artist: str | None = None) -> dict | None:
     }
     set_cached_spotify_track_meta(title, artist, meta)
     return meta
+
+
+def build_spotify_auth_url(state: str) -> str:
+    params = {
+        "response_type": "code",
+        "client_id": SPOTIFY_CLIENT_ID,
+        "redirect_uri": SPOTIFY_REDIRECT_URI,
+        "scope": SPOTIFY_OAUTH_SCOPES,
+        "state": state,
+        "show_dialog": "true",
+    }
+    return "https://accounts.spotify.com/authorize?" + urllib.parse.urlencode(params)
+
+
+def spotify_exchange_code(code: str) -> dict | None:
+    if not code or not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET or not SPOTIFY_REDIRECT_URI:
+        return None
+    auth_raw = f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}".encode("utf-8")
+    auth_b64 = base64.b64encode(auth_raw).decode("ascii")
+    data = urllib.parse.urlencode(
+        {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": SPOTIFY_REDIRECT_URI,
+        }
+    ).encode("utf-8")
+    payload = http_json_request(
+        "https://accounts.spotify.com/api/token",
+        method="POST",
+        headers={
+            "Authorization": f"Basic {auth_b64}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        data=data,
+        timeout=15,
+        max_retries=0,
+    )
+    return payload
+
+
+def spotify_refresh_token(refresh_token: str) -> dict | None:
+    if not refresh_token or not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET:
+        return None
+    auth_raw = f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}".encode("utf-8")
+    auth_b64 = base64.b64encode(auth_raw).decode("ascii")
+    data = urllib.parse.urlencode(
+        {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+        }
+    ).encode("utf-8")
+    payload = http_json_request(
+        "https://accounts.spotify.com/api/token",
+        method="POST",
+        headers={
+            "Authorization": f"Basic {auth_b64}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        data=data,
+        timeout=15,
+        max_retries=0,
+    )
+    if payload and "refresh_token" not in payload:
+        payload["refresh_token"] = refresh_token
+    return payload
+
+
+def save_spotify_user_token(user_id: str, payload: dict) -> None:
+    if not DB_CONN or not user_id or not payload:
+        return
+    access_token = payload.get("access_token") or ""
+    refresh_token = payload.get("refresh_token") or ""
+    expires_in = int(payload.get("expires_in") or 3600)
+    expires_at = int(time.time()) + max(60, expires_in)
+    scope = payload.get("scope") or ""
+    token_type = payload.get("token_type") or "Bearer"
+    if not access_token:
+        return
+    DB_CONN.execute(
+        """
+        INSERT INTO spotify_tokens (user_id, access_token, refresh_token, expires_at, scope, token_type)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+          access_token=excluded.access_token,
+          refresh_token=excluded.refresh_token,
+          expires_at=excluded.expires_at,
+          scope=excluded.scope,
+          token_type=excluded.token_type
+        """,
+        (str(user_id), access_token, refresh_token, expires_at, scope, token_type),
+    )
+    DB_CONN.commit()
+
+
+def get_spotify_user_token(user_id: str) -> str | None:
+    if not DB_CONN or not user_id:
+        return None
+    cur = DB_CONN.cursor()
+    cur.execute(
+        "SELECT access_token, refresh_token, expires_at FROM spotify_tokens WHERE user_id = ?",
+        (str(user_id),),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    access_token, refresh_token, expires_at = row
+    now = int(time.time())
+    if access_token and int(expires_at or 0) - 60 > now:
+        return access_token
+    if refresh_token:
+        refreshed = spotify_refresh_token(refresh_token)
+        if refreshed and refreshed.get("access_token"):
+            save_spotify_user_token(user_id, refreshed)
+            return refreshed.get("access_token")
+    return None
+
+
+def spotify_user_request(user_id: str, url: str) -> dict | None:
+    token = get_spotify_user_token(user_id)
+    if not token:
+        return None
+    return http_json_request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0",
+        },
+        timeout=15,
+        max_retries=0,
+    )
 
 
 def resolve_spotify_to_soundcloud(track_url: str, title: str | None = None, artist: str | None = None) -> str | None:
@@ -2236,6 +2385,112 @@ def start_http_api() -> None:
         }
         set_cached_artist_payload(query, payload, requested_offset, requested_limit)
         return jsonify(payload)
+
+    @app.get("/spotify/login")
+    def spotify_login():
+        if not (SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET and SPOTIFY_REDIRECT_URI):
+            return "Spotify OAuth not configured", 400
+        user_id = str(request.args.get("userId") or request.args.get("user_id") or "").strip()
+        if not user_id:
+            return "userId is required", 400
+        return_url = str(request.args.get("return") or "").strip()
+        state = uuid.uuid4().hex
+        SPOTIFY_OAUTH_STATE[state] = {
+            "user_id": user_id,
+            "return_url": return_url,
+            "expires_at": time.time() + 600,
+        }
+        return redirect(build_spotify_auth_url(state))
+
+    @app.get("/spotify/callback")
+    def spotify_callback():
+        code = str(request.args.get("code") or "").strip()
+        state = str(request.args.get("state") or "").strip()
+        if not code or not state:
+            return "Missing code/state", 400
+        state_data = SPOTIFY_OAUTH_STATE.pop(state, None)
+        if not state_data or state_data.get("expires_at", 0) < time.time():
+            return "State expired", 400
+        token_payload = spotify_exchange_code(code)
+        if not token_payload or not token_payload.get("access_token"):
+            return "Failed to authorize", 400
+        user_id = state_data.get("user_id") or ""
+        save_spotify_user_token(user_id, token_payload)
+        return_url = state_data.get("return_url") or "/"
+        if return_url.startswith("http://") or return_url.startswith("https://") or return_url.startswith("/"):
+            return redirect(return_url)
+        return redirect("/")
+
+    @app.get("/api/spotify/me")
+    def api_spotify_me():
+        user_id = str(request.args.get("userId") or request.args.get("user_id") or "").strip()
+        if not user_id:
+            return jsonify({"ok": False, "error": "userId is required"}), 400
+        me = spotify_user_request(user_id, "https://api.spotify.com/v1/me")
+        if not me:
+            return jsonify({"ok": False, "error": "not authorized"}), 401
+        return jsonify({"ok": True, "me": me})
+
+    @app.get("/api/spotify/library")
+    def api_spotify_library():
+        user_id = str(request.args.get("userId") or request.args.get("user_id") or "").strip()
+        if not user_id:
+            return jsonify({"ok": False, "error": "userId is required"}), 400
+        raw_limit = request.args.get("limit")
+        raw_offset = request.args.get("offset")
+        try:
+            requested_limit = int(raw_limit) if raw_limit is not None else 20
+        except (TypeError, ValueError):
+            requested_limit = 20
+        try:
+            requested_offset = int(raw_offset) if raw_offset is not None else 0
+        except (TypeError, ValueError):
+            requested_offset = 0
+        requested_limit = max(1, min(requested_limit, 50))
+        requested_offset = max(0, requested_offset)
+        url = (
+            "https://api.spotify.com/v1/me/tracks"
+            f"?limit={requested_limit}&offset={requested_offset}"
+        )
+        payload = spotify_user_request(user_id, url)
+        if not payload:
+            return jsonify({"ok": False, "error": "not authorized"}), 401
+        items = payload.get("items") or []
+        tracks = []
+        for it in items:
+            track = it.get("track") or {}
+            artists = track.get("artists") or []
+            artist_name = ", ".join([a.get("name", "") for a in artists if a.get("name")]).strip() or "Unknown Artist"
+            images = (track.get("album") or {}).get("images") or []
+            cover = images[0].get("url") if images else None
+            duration_ms = int(track.get("duration_ms") or 0)
+            mins = duration_ms // 60000
+            secs = (duration_ms % 60000) // 1000
+            tracks.append(
+                {
+                    "id": track.get("id"),
+                    "title": track.get("name"),
+                    "artist": artist_name,
+                    "duration": f"{mins}:{secs:02d}" if duration_ms else "?:??",
+                    "url": (track.get("external_urls") or {}).get("spotify") or "",
+                    "cover_url": cover,
+                    "source": "spotify",
+                    "album_name": (track.get("album") or {}).get("name"),
+                }
+            )
+        total = int(payload.get("total") or 0)
+        next_offset = requested_offset + len(items) if requested_offset + len(items) < total else None
+        return jsonify(
+            {
+                "ok": True,
+                "tracks": tracks,
+                "offset": requested_offset,
+                "limit": requested_limit,
+                "next_offset": next_offset,
+                "has_more": bool(next_offset),
+                "total": total,
+            }
+        )
 
     @app.get("/api/new-releases")
     def api_new_releases():

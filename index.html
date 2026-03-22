@@ -207,6 +207,44 @@
       padding: 4px 0 12px;
     }
 
+    .spotify-card {
+      margin: 8px 16px 16px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 12px;
+    }
+
+    .spotify-title {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .spotify-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .spotify-btn {
+      background: #1b1b1b;
+      border: 1px solid var(--border);
+      color: var(--text-primary);
+      border-radius: 12px;
+      padding: 8px 12px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .spotify-status {
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
     .track {
       background: var(--bg-secondary);
       border: 1px solid var(--border);
@@ -393,6 +431,15 @@
     </div>
   </div>
 
+  <div class="spotify-card" id="spotifyCard">
+    <div class="spotify-title">Spotify</div>
+    <div class="spotify-actions">
+      <button class="spotify-btn" id="spotifyConnectBtn">Подключить</button>
+      <button class="spotify-btn" id="spotifyLibraryBtn">Мои треки</button>
+    </div>
+    <div class="spotify-status" id="spotifyStatus">Не подключен</div>
+  </div>
+
   <div class="section-title">Недавние поиски</div>
   <div class="recent-searches" id="recentSearches"></div>
   <div class="artist-card" id="artistCard"></div>
@@ -428,6 +475,8 @@
     const SEARCH_URL = `${API_BASE}/api/search`;
     const DOWNLOAD_URL = `${API_BASE}/api/download`;
     const ARTIST_URL = `${API_BASE}/api/artist`;
+    const SPOTIFY_ME_URL = `${API_BASE}/api/spotify/me`;
+    const SPOTIFY_LIBRARY_URL = `${API_BASE}/api/spotify/library`;
 
     const userId = tg?.initDataUnsafe?.user?.id || "demo";
 
@@ -438,6 +487,9 @@
     const artistModalEl = document.getElementById("artistModal");
     const artistModalBody = document.getElementById("artistModalBody");
     const artistCloseBtn = document.getElementById("artistCloseBtn");
+    const spotifyConnectBtn = document.getElementById("spotifyConnectBtn");
+    const spotifyLibraryBtn = document.getElementById("spotifyLibraryBtn");
+    const spotifyStatusEl = document.getElementById("spotifyStatus");
 
     let playlist = [];
     let lastQuery = "";
@@ -454,6 +506,7 @@
       hasMore: false,
       loading: false
     };
+    let spotifyOffset = 0;
 
     const loadMoreWrap = document.getElementById("loadMoreWrap");
     const loadMoreBtn = document.getElementById("loadMoreBtn");
@@ -514,6 +567,7 @@
         if (incoming.length >= PAGE_SIZE) {
           searchOffset += PAGE_SIZE;
           loadMoreWrap.style.display = "block";
+          loadMoreBtn.onclick = () => searchMusic(query, true);
         } else {
           loadMoreWrap.style.display = "none";
         }
@@ -919,6 +973,68 @@
       `;
     }
 
+    function openSpotifyLogin() {
+      const returnUrl = window.location.href;
+      const url = `${API_BASE}/spotify/login?userId=${encodeURIComponent(userId)}&return=${encodeURIComponent(returnUrl)}`;
+      if (tg?.openLink) tg.openLink(url);
+      else window.open(url, "_blank");
+    }
+
+    async function refreshSpotifyStatus() {
+      if (!spotifyStatusEl) return;
+      try {
+        const res = await fetch(`${SPOTIFY_ME_URL}?userId=${encodeURIComponent(userId)}`);
+        if (!res.ok) {
+          spotifyStatusEl.textContent = "Не подключен";
+          return;
+        }
+        const data = await res.json();
+        if (data?.ok && data?.me) {
+          const name = data.me.display_name || data.me.id || "Подключен";
+          spotifyStatusEl.textContent = `Подключен: ${name}`;
+          return;
+        }
+        spotifyStatusEl.textContent = "Не подключен";
+      } catch {
+        spotifyStatusEl.textContent = "Не подключен";
+      }
+    }
+
+    async function loadSpotifyLibrary(append = false) {
+      if (!append) {
+        spotifyOffset = 0;
+        showLoading();
+      }
+      try {
+        const url = `${SPOTIFY_LIBRARY_URL}?userId=${encodeURIComponent(userId)}&limit=${PAGE_SIZE}&offset=${spotifyOffset}`;
+        const res = await fetch(url);
+        if (res.status === 401) {
+          openSpotifyLogin();
+          showError("Подключите Spotify для просмотра треков");
+          return;
+        }
+        if (!res.ok) throw new Error("Spotify library failed");
+        const data = await res.json();
+        const incoming = dedupeTracks((data.tracks || []).map(mapTrack));
+        if (!append) {
+          playlist = incoming;
+        } else {
+          playlist = dedupeTracks(playlist.concat(incoming));
+        }
+        displayResults(playlist);
+        if (data.has_more) {
+          spotifyOffset = data.next_offset || (spotifyOffset + PAGE_SIZE);
+          loadMoreWrap.style.display = "block";
+          loadMoreBtn.onclick = () => loadSpotifyLibrary(true);
+        } else {
+          loadMoreWrap.style.display = "none";
+        }
+      } catch (error) {
+        console.error("Spotify library error:", error);
+        showError("Не удалось загрузить треки Spotify");
+      }
+    }
+
     function showNotification(text) {
       if (tg?.showAlert) tg.showAlert(text);
       else alert(text);
@@ -938,13 +1054,15 @@
     }
 
     renderRecentSearches();
+    refreshSpotifyStatus();
     setTimeout(() => searchInput.focus(), 300);
 
-    loadMoreBtn.onclick = () => {
-      const q = searchInput.value.trim();
-      if (q) searchMusic(q, true);
-    };
-
+    if (spotifyConnectBtn) {
+      spotifyConnectBtn.onclick = () => openSpotifyLogin();
+    }
+    if (spotifyLibraryBtn) {
+      spotifyLibraryBtn.onclick = () => loadSpotifyLibrary(false);
+    }
     if (artistLoadMoreBtn) {
       artistLoadMoreBtn.onclick = () => {
         loadArtistMore();
