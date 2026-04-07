@@ -12,6 +12,8 @@ import urllib.parse
 import urllib.error
 import uuid
 import threading
+import shutil
+import glob
 
 from telegram import (
     Bot,
@@ -108,6 +110,13 @@ YTDLP_AUDIO_BITRATE = int(os.getenv("YTDLP_AUDIO_BITRATE", "64"))
 YTDLP_FORMAT = os.getenv("YTDLP_FORMAT", "bestaudio[abr<=96]/bestaudio").strip()
 YTDLP_CONCURRENT_FRAGMENTS = int(os.getenv("YTDLP_CONCURRENT_FRAGMENTS", "8"))
 FFMPEG_THREADS = int(os.getenv("FFMPEG_THREADS", "2"))
+SPOTDL_ENABLED = os.getenv("SPOTDL_ENABLED", "1").strip() == "1"
+SPOTDL_TIMEOUT_SEC = int(os.getenv("SPOTDL_TIMEOUT_SEC", "240"))
+SPOTDL_FORMAT = os.getenv("SPOTDL_FORMAT", "mp3").strip().lower()
+SPOTDL_BITRATE = os.getenv("SPOTDL_BITRATE", "128k").strip().lower()
+SPOTDL_THREADS = int(os.getenv("SPOTDL_THREADS", "2"))
+SPOTDL_COOKIE_FILE = os.getenv("SPOTDL_COOKIE_FILE", "").strip()
+SPOTDL_FALLBACK_TO_SC = os.getenv("SPOTDL_FALLBACK_TO_SC", "1").strip() == "1"
 SEND_THUMBNAIL = os.getenv("SEND_THUMBNAIL", "0").strip() == "1"
 TELEGRAM_POOL_SIZE = int(os.getenv("TELEGRAM_POOL_SIZE", "20"))
 TELEGRAM_POOL_TIMEOUT = float(os.getenv("TELEGRAM_POOL_TIMEOUT", "30"))
@@ -1633,6 +1642,82 @@ def run_yt_dlp(cmd: list[str], timeout: int) -> subprocess.CompletedProcess:
         return subprocess.CompletedProcess(args=cmd, returncode=124, stdout="", stderr=f"timeout {timeout}s")
 
 
+def is_spotdl_available() -> bool:
+    return SPOTDL_ENABLED and shutil.which("spotdl") is not None
+
+
+def run_spotdl(cmd: list[str], timeout: int, cwd: str) -> subprocess.CompletedProcess:
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd)
+        if result.returncode != 0:
+            logger.error("spotDL Error (cmd=%s): %s", " ".join(cmd), result.stderr.strip())
+        return result
+    except subprocess.TimeoutExpired:
+        logger.error("spotDL Timeout (cmd=%s)", " ".join(cmd))
+        return subprocess.CompletedProcess(args=cmd, returncode=124, stdout="", stderr=f"timeout {timeout}s")
+
+
+def _find_latest_audio_file(work_dir: str, preferred_ext: str) -> str | None:
+    exts = [preferred_ext] + [e for e in ["mp3", "m4a", "opus", "ogg", "flac", "wav"] if e != preferred_ext]
+    candidates: list[str] = []
+    for ext in exts:
+        candidates.extend(glob.glob(os.path.join(work_dir, f"**/*.{ext}"), recursive=True))
+    candidates = [c for c in candidates if os.path.isfile(c)]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: os.path.getmtime(p))
+
+
+def cleanup_download_artifacts(path: str | None) -> None:
+    if not path:
+        return
+    try:
+        if os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
+        elif os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        pass
+    try:
+        base = os.path.abspath(TEMP_DIR)
+        current = os.path.abspath(os.path.dirname(path))
+        while current and current != base:
+            if os.path.basename(current).startswith("spotdl_"):
+                shutil.rmtree(current, ignore_errors=True)
+                break
+            current = os.path.dirname(current)
+    except Exception:
+        pass
+
+
+def download_audio_spotdl(spotify_url: str) -> str | None:
+    if not spotify_url or not is_spotdl_available():
+        return None
+    work_dir = tempfile.mkdtemp(prefix="spotdl_", dir=TEMP_DIR)
+    cmd = [
+        "spotdl",
+        "download",
+        spotify_url,
+        "--format",
+        SPOTDL_FORMAT,
+        "--bitrate",
+        SPOTDL_BITRATE,
+        "--threads",
+        str(max(1, SPOTDL_THREADS)),
+    ]
+    if SPOTDL_COOKIE_FILE:
+        cmd.extend(["--cookie-file", SPOTDL_COOKIE_FILE])
+    result = run_spotdl(cmd, timeout=SPOTDL_TIMEOUT_SEC, cwd=work_dir)
+    if result.returncode != 0:
+        cleanup_download_artifacts(work_dir)
+        return None
+    found = _find_latest_audio_file(work_dir, SPOTDL_FORMAT)
+    if not found:
+        cleanup_download_artifacts(work_dir)
+        return None
+    return found
+
+
 def parse_search_results(stdout: str, include_covers: bool = True) -> list:
     results = []
     for line in stdout.strip().split("\n"):
@@ -2481,18 +2566,37 @@ async def send_track_to_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int, i
         return
 
     source_url = item["url"]
-    if item.get("source") == "spotify" or "open.spotify.com/track/" in (source_url or ""):
-        source_url = await asyncio.to_thread(
-            resolve_spotify_to_soundcloud,
-            source_url,
-            item.get("title"),
-            item.get("artist"),
-        )
-        if not source_url:
-            await status.edit_text("❌ Не удалось найти MP3-источник для Spotify трека.")
+    is_spotify_track = item.get("source") == "spotify" or "open.spotify.com/track/" in (source_url or "")
+    audio_file = None
+    if is_spotify_track and is_spotdl_available():
+        audio_file = await asyncio.to_thread(download_audio_spotdl, source_url)
+        if not audio_file and SPOTDL_FALLBACK_TO_SC:
+            resolved_url = await asyncio.to_thread(
+                resolve_spotify_to_soundcloud,
+                source_url,
+                item.get("title"),
+                item.get("artist"),
+            )
+            if not resolved_url:
+                await status.edit_text("❌ Не удалось найти MP3-источник для Spotify трека.")
+                return
+            audio_file = await asyncio.to_thread(download_audio, resolved_url)
+        elif not audio_file:
+            await status.edit_text("❌ Ошибка при скачивании через Spotify.")
             return
-
-    audio_file = await asyncio.to_thread(download_audio, source_url)
+    else:
+        if is_spotify_track:
+            resolved_url = await asyncio.to_thread(
+                resolve_spotify_to_soundcloud,
+                source_url,
+                item.get("title"),
+                item.get("artist"),
+            )
+            if not resolved_url:
+                await status.edit_text("❌ Не удалось найти MP3-источник для Spotify трека.")
+                return
+            source_url = resolved_url
+        audio_file = await asyncio.to_thread(download_audio, source_url)
     if not audio_file:
         await status.edit_text("❌ Ошибка при скачивании MP3.")
         return
@@ -2526,8 +2630,7 @@ async def send_track_to_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int, i
     finally:
         if thumb_path and os.path.exists(thumb_path):
             os.remove(thumb_path)
-        if audio_file and os.path.exists(audio_file):
-            os.remove(audio_file)
+        cleanup_download_artifacts(audio_file)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2543,7 +2646,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎵 Отправь название трека или ссылку SoundCloud.\n"
         "Поиск: SoundCloud (обложки из Spotify при наличии)\n"
-        "Скачивание MP3: через SoundCloud\n"
+        "Скачивание MP3: Spotify (spotDL) для Spotify-треков, иначе SoundCloud\n"
         "Команды:\n"
         "/help"
     )
@@ -2554,7 +2657,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Как пользоваться:\n"
         "1) Напиши название трека (поиск в SoundCloud).\n"
         "2) Выбери кнопку скачать.\n"
-        "3) Бот отправит MP3-файл.\n\n"
+        "3) Бот отправит MP3-файл (Spotify через spotDL, иначе SoundCloud).\n\n"
         "Команды:\n"
         "/start\n"
         "/help"
@@ -2984,17 +3087,32 @@ def start_http_api() -> None:
                 fut.result(timeout=60)
                 return jsonify({"ok": True, "cached": True})
 
-            resolved_url = track_url
-            if item.get("source") == "spotify" or "open.spotify.com/track/" in track_url:
-                resolved_url = resolve_spotify_to_soundcloud(
-                    track_url,
-                    item.get("title"),
-                    item.get("artist"),
-                )
-                if not resolved_url:
-                    return jsonify({"ok": False, "error": "spotify track resolve failed"}), 400
-
-            audio_file = download_audio(resolved_url)
+            is_spotify_track = item.get("source") == "spotify" or "open.spotify.com/track/" in track_url
+            audio_file = None
+            if is_spotify_track and is_spotdl_available():
+                audio_file = download_audio_spotdl(track_url)
+                if not audio_file and SPOTDL_FALLBACK_TO_SC:
+                    resolved_url = resolve_spotify_to_soundcloud(
+                        track_url,
+                        item.get("title"),
+                        item.get("artist"),
+                    )
+                    if not resolved_url:
+                        return jsonify({"ok": False, "error": "spotify track resolve failed"}), 400
+                    audio_file = download_audio(resolved_url)
+                elif not audio_file:
+                    return jsonify({"ok": False, "error": "spotdl download failed"}), 500
+            else:
+                resolved_url = track_url
+                if is_spotify_track:
+                    resolved_url = resolve_spotify_to_soundcloud(
+                        track_url,
+                        item.get("title"),
+                        item.get("artist"),
+                    )
+                    if not resolved_url:
+                        return jsonify({"ok": False, "error": "spotify track resolve failed"}), 400
+                audio_file = download_audio(resolved_url)
             if not audio_file:
                 return jsonify({"ok": False, "error": "download failed"}), 500
 
@@ -3027,8 +3145,7 @@ def start_http_api() -> None:
             finally:
                 if thumb_path and os.path.exists(thumb_path):
                     os.remove(thumb_path)
-                if audio_file and os.path.exists(audio_file):
-                    os.remove(audio_file)
+                cleanup_download_artifacts(audio_file)
 
             return jsonify({"ok": True, "cached": False})
         except Exception as e:
